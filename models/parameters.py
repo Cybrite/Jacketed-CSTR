@@ -1,0 +1,48 @@
+"""Process parameter definitions for the jacketed exothermic CSTR.
+
+The values are chosen to be representative of the classic exothermic CSTR
+example used in advanced process control textbooks. Units are kept consistent
+in engineering-style cal, g, L, min, and K units to avoid hidden conversion
+errors inside the dynamic equations.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Dict
+
+
+@dataclass(frozen=True)
+class CSTRParameters:
+    """Physical and kinetic parameters for the CSTR model."""
+
+    V: float = 100.0
+    F: float = 100.0
+    Ca0: float = 1.0
+    T0: float = 350.0
+    Tc0: float = 300.0
+    UA: float = 5.0e4
+    deltaH: float = -2.0e5
+    E: float = 8.0e4
+    R: float = 1.987
+    k0: float = 7.2e10
+    rho: float = 1000.0
+    Cp: float = 0.239
+    T_safe: float = 500.0
+    Ca_min: float = 0.0
+    T_min: float = 250.0
+    controller_bias: float = 300.0
+    dt: float = 0.1
+    episode_steps: int = 200
+
+    def as_dict(self) -> Dict[str, float]:
+        """Return the parameters as a standard Python dictionary."""
+
+        return asdict(self)
+
+
+
+def default_parameters() -> CSTRParameters:
+    """Return the default textbook parameter set."""
+
+    return CSTRParameters()
