@@ -41,7 +41,6 @@ def step_response_metrics(time: Iterable[float], response: Iterable[float], setp
     y = np.asarray(list(response), dtype=float)
     error = setpoint - y
 
-    final_value = float(y[-1])
     amplitude = abs(setpoint - y[0]) if abs(setpoint - y[0]) > 1e-9 else 1.0
 
     if setpoint >= y[0]:
@@ -53,10 +52,10 @@ def step_response_metrics(time: Iterable[float], response: Iterable[float], setp
 
     rise_time = max(0.0, _first_crossing_time(t, y, lower_level) - _first_crossing_time(t, y, upper_level))
 
-    tolerance = 0.02 * max(abs(final_value), 1.0)
+    tolerance = max(0.02 * amplitude, 0.25)
     settling_time = float(t[-1])
     for index in range(len(y)):
-        if np.all(np.abs(y[index:] - final_value) <= tolerance):
+        if np.all(np.abs(y[index:] - setpoint) <= tolerance):
             settling_time = float(t[index])
             break
 

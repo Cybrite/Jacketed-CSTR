@@ -58,7 +58,7 @@ The implementation follows the classical process-control sequence:
 5. Design a PI controller
 6. Tune PI parameters using classical rules
 7. Compare closed-loop responses and performance indices
-8. Use Q-learning with DQN to search for improved PI gains
+8. Use reinforcement learning with DDPG to search for improved PI gains
 9. Compare RL-optimized and classical controllers
 
 ## Classical PI Tuning Methods
@@ -87,7 +87,7 @@ The RL portion uses a continuous action formulation that directly searches over 
 - Algorithm: DDPG from Stable-Baselines3
 - Reward: penalizes tracking error, oscillation, overshoot, and control effort
 
-This is a practical way to tune PI controllers when the goal is to optimize continuous controller parameters rather than select from a discrete gain table.
+This is a practical way to tune PI controllers when the goal is to optimize continuous controller parameters directly.
 
 ## Project Structure
 

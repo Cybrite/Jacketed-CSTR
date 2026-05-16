@@ -91,10 +91,11 @@ def main() -> None:
     fopdt = estimate_fopdt_from_step(linear_result.step_time, linear_result.step_response, du=1.0)
     print(f"FOPDT estimate: K={fopdt.K:.4f}, tau={fopdt.tau:.4f}, theta={fopdt.theta:.4f}")
 
+    imc_reference = imc_pi(fopdt)
     tuning_map = {
         "ZN-PI": ziegler_nichols_pi(fopdt),
         "Cohen-Coon PI": cohen_coon_pi(fopdt),
-        "IMC-PI": imc_pi(fopdt),
+        "IMC-PI": imc_reference,
     }
 
     print("\nClassical PI tuning results:")
@@ -128,9 +129,13 @@ def main() -> None:
     plot_linear_closed_loop_comparison(linear_closed_loop_results, FIGURES / "linear_closed_loop_comparison.png")
 
     print("\nStarting reinforcement learning based PI optimization with DDPG...")
-    rl_config = EnvironmentConfig(setpoint_temperature=setpoint)
+    rl_config = EnvironmentConfig(
+        setpoint_temperature=setpoint,
+        Kc_bounds=(max(0.2, 0.5 * imc_reference.Kc), max(12.0, 3.0 * imc_reference.Kc)),
+        tauI_bounds=(max(0.2, 0.5 * imc_reference.tauI), max(8.0, 12.0 * imc_reference.tauI)),
+    )
     env = CSTRPITuningEnv(model, rl_config)
-    rl_model, history = train_ddpg_agent(env, total_timesteps=20000, model_path=MODELS / "ddpg_cstr_pi")
+    rl_model, history = train_ddpg_agent(env, total_timesteps=30000, model_path=MODELS / "ddpg_cstr_pi")
     plot_reward_curve(history.episode_rewards, FIGURES / "rl_reward_convergence.png")
     plot_gain_history(history.action_trace, FIGURES / "rl_gain_evolution.png")
 

@@ -99,22 +99,27 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count += 1
         next_error = self.config.setpoint_temperature - next_state[1]
         overshoot = max(0.0, next_state[1] - self.config.setpoint_temperature)
-        error_scale = max(abs(self.config.setpoint_temperature), 1.0)
-        control_scale = max(self.config.tc_bounds[1] - self.config.tc_bounds[0], 1.0)
+        error_scale = 10.0
+        control_scale = 50.0
         normalized_error = next_error / error_scale
         normalized_overshoot = overshoot / error_scale
         normalized_control = (control - self.model.params.Tc0) / control_scale
         normalized_delta_error = (next_error - error) / error_scale
+        normalized_integral = self._integral_error / (error_scale * max(self.config.episode_steps * self.config.dt, 1.0))
 
         reward = -(
-            2.0 * normalized_error**2
+            4.0 * normalized_error**2
             + 0.05 * normalized_control**2
-            + 4.0 * normalized_overshoot**2
+            + 6.0 * normalized_overshoot**2
             + 0.2 * normalized_delta_error**2
+            + 0.05 * normalized_integral**2
         )
 
         if next_state[1] > 0.95 * self.config.safety_temperature:
             reward -= 5.0
+
+        if abs(next_error) < 0.5:
+            reward += 0.5
 
         terminated = bool(
             next_state[1] >= self.config.safety_temperature
@@ -145,9 +150,9 @@ class CSTRPITuningEnv(gym.Env):
     def _get_observation(self) -> np.ndarray:
         error = self.config.setpoint_temperature - self._state[1]
         derivative_error = (error - self._previous_error) / self.config.dt
-        error_scale = max(abs(self.config.setpoint_temperature), 1.0)
+        error_scale = 10.0
         integral_scale = error_scale * max(self.config.dt * self.config.episode_steps, 1.0)
-        derivative_scale = error_scale / max(self.config.dt, 1e-9)
+        derivative_scale = 50.0
         observation = np.array(
             [
                 error / error_scale,
