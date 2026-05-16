@@ -1,4 +1,4 @@
-"""DQN training utilities for PI gain optimization."""
+"""DDPG training utilities for PI gain optimization."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
-from stable_baselines3 import DQN
+from stable_baselines3 import DDPG
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize
 
 from rl.env import CSTRPITuningEnv, EnvironmentConfig
 
@@ -34,13 +35,11 @@ class RewardActionLogger(BaseCallback):
 
     def _on_step(self) -> bool:
         rewards = self.locals.get("rewards")
-        infos = self.locals.get("infos")
+        actions = self.locals.get("actions")
         if rewards is not None:
             self._episode_reward += float(np.asarray(rewards).mean())
-        if infos is not None and len(infos) > 0:
-            latest_info = infos[0]
-            if isinstance(latest_info, dict) and "Kc" in latest_info and "tauI" in latest_info:
-                self.action_trace.append([float(latest_info["Kc"]), float(latest_info["tauI"])])
+        if actions is not None:
+            self.action_trace.append(np.asarray(actions).reshape(-1).tolist())
         dones = self.locals.get("dones")
         if dones is not None and bool(np.asarray(dones).any()):
             self.episode_rewards.append(self._episode_reward)
@@ -49,29 +48,31 @@ class RewardActionLogger(BaseCallback):
 
 
 
-def train_dqn_agent(
+def train_ddpg_agent(
     model_env: CSTRPITuningEnv,
     total_timesteps: int = 10000,
     model_path: Path | None = None,
-) -> Tuple[DQN, TrainingHistory]:
-    """Train a DQN agent on the discretized PI tuning environment."""
+) -> Tuple[DDPG, TrainingHistory]:
+    """Train a DDPG agent on the PI tuning environment."""
 
     config = model_env.config
     vec_env = DummyVecEnv([lambda: CSTRPITuningEnv(model_env.model, config)])
-    model = DQN(
+    vec_env = VecMonitor(vec_env)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(2), sigma=np.array([0.2, 0.6]))
+    model = DDPG(
         "MlpPolicy",
         vec_env,
+        action_noise=action_noise,
         verbose=0,
         learning_rate=1e-3,
-        buffer_size=50000,
+        buffer_size=100000,
         batch_size=128,
         gamma=0.99,
-        train_freq=4,
+        tau=0.005,
+        train_freq=(1, "step"),
         gradient_steps=1,
-        exploration_fraction=0.25,
-        exploration_initial_eps=1.0,
-        exploration_final_eps=0.05,
-        policy_kwargs={"net_arch": [128, 128]},
+        policy_kwargs={"net_arch": [256, 256]},
     )
 
     callback = RewardActionLogger()
@@ -81,10 +82,10 @@ def train_dqn_agent(
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save(str(model_path))
 
-    best_gains, rollout_trace = evaluate_policy_gains(model, model_env.model, config)
+    best_gains = evaluate_policy_gains(model, model_env.model, config, vec_env=vec_env)
     history = TrainingHistory(
         episode_rewards=callback.episode_rewards,
-        action_trace=rollout_trace if rollout_trace else callback.action_trace,
+        action_trace=callback.action_trace,
         best_gains=best_gains,
     )
     return model, history
@@ -92,11 +93,12 @@ def train_dqn_agent(
 
 
 def evaluate_policy_gains(
-    model: DQN,
+    model: DDPG,
     reactor_model,
     config: EnvironmentConfig,
     episodes: int = 3,
-) -> Tuple[Tuple[float, float], List[List[float]]]:
+    vec_env=None,
+) -> Tuple[float, float]:
     """Estimate the optimized PI gains by rolling out the learned policy."""
 
     env = CSTRPITuningEnv(reactor_model, config)
@@ -105,11 +107,14 @@ def evaluate_policy_gains(
         observation, _ = env.reset()
         terminated = truncated = False
         while not (terminated or truncated):
-            action, _ = model.predict(observation, deterministic=True)
+            if vec_env is not None:
+                normalized_obs = vec_env.normalize_obs(np.asarray(observation, dtype=np.float32))
+                action, _ = model.predict(normalized_obs, deterministic=True)
+            else:
+                action, _ = model.predict(observation, deterministic=True)
             observation, _, terminated, truncated, _ = env.step(action)
-            action_index = int(np.asarray(action).item())
-            gains.append(np.asarray(env.gain_table[action_index], dtype=float))
+            gains.append(np.asarray(action, dtype=float))
     if not gains:
-        return (1.0, 1.0), []
+        return 1.0, 1.0
     tail = np.asarray(gains[-min(len(gains), 50):], dtype=float)
-    return (float(np.median(tail[:, 0])), float(np.median(tail[:, 1]))), [g.tolist() for g in gains]
+    return float(np.median(tail[:, 0])), float(np.median(tail[:, 1]))

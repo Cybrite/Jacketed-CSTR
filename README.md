@@ -1,8 +1,8 @@
-# Dynamic Modeling and Q-Learning Based Optimal PI Control of an Exothermic CSTR
+# Dynamic Modeling and Reinforcement Learning Based Optimal PI Control of an Exothermic CSTR
 
 This project implements a graduate-level process control study of a jacketed exothermic Continuous Stirred Tank Reactor (CSTR). It follows a standard workflow used in advanced process control:
 
-`PROCESS -> DYNAMIC MODEL -> OPEN LOOP ANALYSIS -> CONTROLLER DESIGN -> CLASSICAL TUNING -> Q-LEARNING OPTIMIZATION`
+`PROCESS -> DYNAMIC MODEL -> OPEN LOOP ANALYSIS -> CONTROLLER DESIGN -> CLASSICAL TUNING -> RL OPTIMIZATION`
 
 The objective is to compare classical PI tuning methods with a reinforcement-learning-based PI tuning strategy for temperature control of an unsafe and highly nonlinear reactor.
 
@@ -14,7 +14,7 @@ The objective is to compare classical PI tuning methods with a reinforcement-lea
 - Computes state-space and transfer-function representations
 - Analyzes poles, zeros, eigenvalues, Bode plots, root locus, and step response
 - Designs and compares classical PI controllers
-- Trains a Q-learning agent using DQN to optimize PI gains
+- Trains a DDPG agent to optimize PI gains
 - Generates plots, tables, and saved model artifacts automatically
 
 ## Process Model
@@ -80,21 +80,21 @@ For each method, the code computes:
 
 ## Reinforcement Learning Approach
 
-Because standard Q-learning requires a discrete action space, the PI gain search is formulated as a discrete selection problem.
+The RL portion uses a continuous action formulation that directly searches over PI gains.
 
 - State: error, integral error, derivative of error
-- Action: a discrete PI gain pair $(K_c, \tau_I)$
-- Algorithm: DQN from Stable-Baselines3
+- Action: continuous PI gains $(K_c, \tau_I)$
+- Algorithm: DDPG from Stable-Baselines3
 - Reward: penalizes tracking error, oscillation, overshoot, and control effort
 
-This makes the RL portion easier to understand for users new to machine learning while still demonstrating a practical controller tuning workflow.
+This is a practical way to tune PI controllers when the goal is to optimize continuous controller parameters rather than select from a discrete gain table.
 
 ## Project Structure
 
 - `models/` - reactor model and physical parameters
 - `controllers/` - PI controller and classical tuning rules
 - `simulation/` - open-loop and closed-loop analysis tools
-- `rl/` - Gymnasium environment and DQN training code
+- `rl/` - Gymnasium environment and DDPG training code
 - `plots/` - plotting and visualization utilities
 - `utils/` - metrics and FOPDT approximation helpers
 - `artifacts/` - generated figures and saved models
@@ -130,7 +130,7 @@ The script will:
 - simulate the nonlinear open-loop reactor
 - analyze the linearized model
 - compare classical PI tuning methods
-- train a DQN agent for PI gain selection
+- train a DDPG agent for PI gain optimization
 - generate all comparison plots and performance tables
 - save the trained RL model in `artifacts/models/`
 
@@ -153,7 +153,7 @@ The project automatically saves:
 
 - The reactor parameters are chosen to be representative of a realistic exothermic CSTR example used in advanced process control.
 - PI control is used instead of PID because thermal chemical processes are often noisy, slow, and well served by PI action.
-- The RL agent searches over a discretized PI gain grid, which makes the Q-learning formulation tractable and beginner-friendly.
+- The RL agent searches over continuous PI gains, which is well suited to DDPG.
 - The project is modular so the same nonlinear plant model can support future controller design or learning experiments.
 
 ## Purpose

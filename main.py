@@ -24,7 +24,7 @@ from plots.visualization import (
     plot_root_locus,
 )
 from rl.env import CSTRPITuningEnv, EnvironmentConfig
-from rl.train import train_dqn_agent
+from rl.train import train_ddpg_agent
 from simulation.analysis import (
     closed_loop_linear_response,
     classical_closed_loop_analysis,
@@ -127,10 +127,10 @@ def main() -> None:
         }
     plot_linear_closed_loop_comparison(linear_closed_loop_results, FIGURES / "linear_closed_loop_comparison.png")
 
-    print("\nStarting Q-learning based PI optimization with DQN...")
+    print("\nStarting reinforcement learning based PI optimization with DDPG...")
     rl_config = EnvironmentConfig(setpoint_temperature=setpoint)
     env = CSTRPITuningEnv(model, rl_config)
-    rl_model, history = train_dqn_agent(env, total_timesteps=12000, model_path=MODELS / "dqn_cstr_pi")
+    rl_model, history = train_ddpg_agent(env, total_timesteps=20000, model_path=MODELS / "ddpg_cstr_pi")
     plot_reward_curve(history.episode_rewards, FIGURES / "rl_reward_convergence.png")
     plot_gain_history(history.action_trace, FIGURES / "rl_gain_evolution.png")
 

@@ -167,7 +167,7 @@ def plot_reward_curve(rewards: Sequence[float], path: Path) -> None:
     ax.plot(rewards, color="#264653", lw=2)
     ax.set_xlabel("Episode")
     ax.set_ylabel("Reward")
-    ax.set_title("DQN Reward Convergence")
+    ax.set_title("DDPG Reward Convergence")
     save_figure(fig, path)
     plt.close(fig)
 

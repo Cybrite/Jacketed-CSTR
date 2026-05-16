@@ -1,4 +1,4 @@
-"""Custom Gymnasium environment for Q-learning based PI gain optimization on the CSTR."""
+"""Custom Gymnasium environment for PI gain optimization on the CSTR."""
 
 from __future__ import annotations
 
@@ -20,18 +20,18 @@ class EnvironmentConfig:
     episode_steps: int = 200
     safety_temperature: float = 500.0
     setpoint_temperature: float = 355.0
-    Kc_grid: Tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0)
-    tauI_grid: Tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0, 40.0)
+    Kc_bounds: Tuple[float, float] = (0.1, 25.0)
+    tauI_bounds: Tuple[float, float] = (0.2, 50.0)
     tc_bounds: Tuple[float, float] = (250.0, 450.0)
 
 
 class CSTRPITuningEnv(gym.Env):
-    """Discrete control environment where actions select PI gains.
+    """Continuous control environment where actions are PI gains.
 
     The state vector is [error, integral_error, derivative_error]. The action
-    is an integer index into a predefined gain table. This is the practical
-    Q-learning formulation because standard tabular Q-learning and DQN require
-    a discrete action set.
+    vector is [Kc, tauI]. The environment converts those gains into a coolant
+    temperature command via a PI law and advances the nonlinear plant by one
+    sampling interval.
     """
 
     metadata = {"render_modes": []}
@@ -45,8 +45,11 @@ class CSTRPITuningEnv(gym.Env):
             safety_temperature=model.params.T_safe,
             setpoint_temperature=model.params.T0 + 5.0,
         )
-        self.gain_table = [(float(kc), float(tau_i)) for kc in self.config.Kc_grid for tau_i in self.config.tauI_grid]
-        self.action_space = spaces.Discrete(len(self.gain_table))
+        self.action_space = spaces.Box(
+            low=np.array([self.config.Kc_bounds[0], self.config.tauI_bounds[0]], dtype=np.float32),
+            high=np.array([self.config.Kc_bounds[1], self.config.tauI_bounds[1]], dtype=np.float32),
+            dtype=np.float32,
+        )
         self.observation_space = spaces.Box(
             low=np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32),
             high=np.array([np.inf, np.inf, np.inf], dtype=np.float32),
@@ -81,9 +84,8 @@ class CSTRPITuningEnv(gym.Env):
         return self._get_observation(), {}
 
     def step(self, action):
-        action_index = int(np.asarray(action).item())
-        action_index = int(np.clip(action_index, 0, self.action_space.n - 1))
-        Kc, tauI = self.gain_table[action_index]
+        gains = np.clip(np.asarray(action, dtype=float), self.action_space.low, self.action_space.high)
+        Kc, tauI = float(gains[0]), float(gains[1])
         error = self.config.setpoint_temperature - self._state[1]
         self._integral_error += error * self.config.dt
         derivative_error = (error - self._previous_error) / self.config.dt
@@ -97,15 +99,22 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count += 1
         next_error = self.config.setpoint_temperature - next_state[1]
         overshoot = max(0.0, next_state[1] - self.config.setpoint_temperature)
-        control_effort = (control - self.model.params.Tc0) ** 2
-        oscillation = (next_error - error) ** 2
+        error_scale = max(abs(self.config.setpoint_temperature), 1.0)
+        control_scale = max(self.config.tc_bounds[1] - self.config.tc_bounds[0], 1.0)
+        normalized_error = next_error / error_scale
+        normalized_overshoot = overshoot / error_scale
+        normalized_control = (control - self.model.params.Tc0) / control_scale
+        normalized_delta_error = (next_error - error) / error_scale
 
         reward = -(
-            1.0 * next_error**2
-            + 0.02 * control_effort
-            + 0.4 * overshoot**2
-            + 0.1 * oscillation
+            2.0 * normalized_error**2
+            + 0.05 * normalized_control**2
+            + 4.0 * normalized_overshoot**2
+            + 0.2 * normalized_delta_error**2
         )
+
+        if next_state[1] > 0.95 * self.config.safety_temperature:
+            reward -= 5.0
 
         terminated = bool(
             next_state[1] >= self.config.safety_temperature
@@ -114,13 +123,17 @@ class CSTRPITuningEnv(gym.Env):
         )
         truncated = self._step_count >= self.config.episode_steps
 
+        if terminated:
+            reward -= 20.0
+        elif truncated:
+            reward += 1.0
+
         self._previous_error = error
         self._state = next_state
         self._last_control = control
 
         observation = self._get_observation()
         info = {
-            "action_index": action_index,
             "Kc": Kc,
             "tauI": tauI,
             "control": control,
@@ -132,7 +145,17 @@ class CSTRPITuningEnv(gym.Env):
     def _get_observation(self) -> np.ndarray:
         error = self.config.setpoint_temperature - self._state[1]
         derivative_error = (error - self._previous_error) / self.config.dt
-        observation = np.array([error, self._integral_error, derivative_error], dtype=np.float32)
+        error_scale = max(abs(self.config.setpoint_temperature), 1.0)
+        integral_scale = error_scale * max(self.config.dt * self.config.episode_steps, 1.0)
+        derivative_scale = error_scale / max(self.config.dt, 1e-9)
+        observation = np.array(
+            [
+                error / error_scale,
+                self._integral_error / integral_scale,
+                derivative_error / derivative_scale,
+            ],
+            dtype=np.float32,
+        )
         return observation
 
     def _rk4_step(self, state: np.ndarray, coolant_temperature: float) -> np.ndarray:
