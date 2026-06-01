@@ -44,23 +44,23 @@ MODELS = ARTIFACTS / "models"
 def select_operating_point(model: CSTRModel) -> np.ndarray:
     """Find a steady-state candidate for analysis and control design."""
 
-    candidates = model.find_steady_state_candidates(F=model.params.F, Tc=model.params.Tc0)
+    candidates = model.find_steady_state_candidates(F=model.params.F, Fc=model.params.Fc, Tcin=model.params.Tcin0)
     if not candidates:
-        state, _ = model.steady_state(F=model.params.F, Tc=model.params.Tc0)
+        state, _ = model.steady_state(F=model.params.F, Fc=model.params.Fc, Tcin=model.params.Tcin0)
         return state
 
     stable_candidates = [candidate for candidate in candidates if np.max(np.real(candidate.eigenvalues)) < 0.0]
     ranked_candidates = stable_candidates if stable_candidates else candidates
     preferred = sorted(
         ranked_candidates,
-        key=lambda item: (abs(item.T - 325.0), abs(np.max(np.real(item.eigenvalues)))),
+        key=lambda item: (abs(item.TR - 325.0), abs(np.max(np.real(item.eigenvalues)))),
     )[0]
     print("\nSteady-state candidates:")
     for candidate in candidates:
         dominant = float(np.max(np.real(candidate.eigenvalues)))
         stability = "stable" if dominant < 0.0 else "unstable"
-        print(f"  Ca={candidate.Ca:.4f}, T={candidate.T:.2f} K, dominant eigenvalue={dominant:.4f} ({stability})")
-    return np.array([preferred.Ca, preferred.T], dtype=float)
+        print(f"  Ca={candidate.Ca:.4f}, TR={candidate.TR:.2f} K, TJ={candidate.TJ:.2f} K, dominant eigenvalue={dominant:.4f} ({stability})")
+    return np.array([preferred.Ca, preferred.TR, preferred.TJ], dtype=float)
 
 
 
@@ -74,31 +74,31 @@ def main() -> None:
     model = CSTRModel(params)
     operating_point = select_operating_point(model)
     Fss = float(params.F)
+    Fcss = float(model.coolant_flow_for_steady_state(operating_point, params.Tcin0))
     setpoint = float(operating_point[1] + 5.0)
 
     print("\nProcess description:")
-    print("  Controlled variable y = T (reactor temperature)")
-    print("  Manipulated variable u = F (feed flow rate)")
-    print("  Disturbances = C_A0, T0, T_c")
-    print(f"\nSelected operating point: Ca={operating_point[0]:.4f} mol/L, T={operating_point[1]:.2f} K, Fss={Fss:.2f}")
+    print("  Controlled variable y = T_R (reactor temperature)")
+    print("  Manipulated variable u = F_C (coolant flow rate)")
+    print("  Intermediate variable = T_J (jacket temperature)")
+    print("  Disturbances = C_A0, T0, F, T_C,in")
+    print(f"\nSelected operating point: Ca={operating_point[0]:.4f} mol/L, TR={operating_point[1]:.2f} K, TJ={operating_point[2]:.2f} K, Fss={Fss:.2f}, Fcss={Fcss:.2f}")
     print(f"Control target setpoint: Tsp={setpoint:.2f} K")
 
-    report = build_derivation_report(params, operating_point, Fss)
+    report = build_derivation_report(params, operating_point, Fss, Fcss)
     print("\nGoverning equations and derivation:")
-    print(report.governing_equations)
-    print(report.steady_state_equations)
-    print(report.partial_derivatives)
-    print(report.linearized_equations)
+    print(report.balances)
+    print(report.linearization)
     print(report.transfer_function)
 
     plot_process_control_diagram(setpoint, FIGURES / "process_control_diagram.png")
 
     print("\nRunning nonlinear open-loop disturbance simulation...")
-    t_ol, Ca_ol, T_ol, _, _ = simulate_open_loop_disturbance(model, operating_point)
-    plot_open_loop(t_ol, T_ol, Ca_ol, FIGURES / "open_loop_response.png")
+    t_ol, Ca_ol, TR_ol, TJ_ol, Fc_ol, disturbances = simulate_open_loop_disturbance(model, operating_point)
+    plot_open_loop(t_ol, np.vstack([TR_ol, TJ_ol]), np.vstack([Ca_ol, disturbances[0], disturbances[2]]), FIGURES / "open_loop_response.png")
 
     print("Computing linearized model and open-loop transfer function...")
-    linear_result = linear_analysis(model, operating_point, Fss, params.Tc0)
+    linear_result = linear_analysis(model, operating_point, Fss, Fcss, params.Tcin0)
     plot_linear_step(linear_result.step_time, linear_result.step_response, FIGURES / "linear_step_response.png")
     plot_pole_zero_map(linear_result.poles, linear_result.zeros, FIGURES / "pole_zero_map.png")
     plot_bode(linear_result.transfer_function, FIGURES / "bode_open_loop.png")
@@ -109,7 +109,7 @@ def main() -> None:
     print("B =\n", np.array2string(linear_result.B, precision=6, suppress_small=True))
     print("C =\n", np.array2string(linear_result.C, precision=6, suppress_small=True))
     print("D =\n", np.array2string(linear_result.D, precision=6, suppress_small=True))
-    print("\nTransfer function G(s) = T'(s) / F'(s):")
+    print("\nTransfer function G(s) = T_R'(s) / F_C'(s):")
     print(linear_result.transfer_function)
 
     zeta_open, wn_open = dominant_second_order_characteristics(linear_result.poles)
@@ -145,7 +145,7 @@ def main() -> None:
     imc_closed_loop_temperature = classical_results["IMC-PI"]["temperature"]
     plot_open_vs_closed_loop(
         t_ol,
-        T_ol,
+        TR_ol,
         imc_closed_loop_time,
         imc_closed_loop_temperature,
         setpoint,

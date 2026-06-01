@@ -37,7 +37,7 @@ class PIController:
         self.last_output = self.bias
 
     def compute(self, setpoint: float, measurement: float, dt: float) -> float:
-        """Compute the manipulated feed-flow command."""
+        """Compute the manipulated coolant-flow command."""
 
         error = float(setpoint - measurement)
         self.integral_error += error * dt
@@ -59,7 +59,8 @@ def ziegler_nichols_pi(model: FOPDTModel) -> PIGains:
     """Classic Ziegler-Nichols open-loop PI rule for FOPDT models."""
 
     theta = max(model.theta, 0.05 * model.tau, 1e-3)
-    Kc = 0.9 * model.tau / max(model.K * theta, 1e-9)
+    direction = -1.0 if model.K < 0.0 else 1.0
+    Kc = direction * 0.9 * model.tau / max(abs(model.K) * theta, 1e-9)
     tauI = 3.33 * theta
     return PIGains(Kc=float(Kc), tauI=float(max(tauI, 1e-6)))
 
@@ -70,7 +71,8 @@ def cohen_coon_pi(model: FOPDTModel) -> PIGains:
 
     theta = max(model.theta, 0.05 * model.tau, 1e-3)
     ratio = theta / max(model.tau, 1e-9)
-    Kc = (1.0 / max(model.K, 1e-9)) * (model.tau / theta) * (0.9 + ratio / 12.0) / (1.0 + ratio / 30.0)
+    direction = -1.0 if model.K < 0.0 else 1.0
+    Kc = direction * (1.0 / max(abs(model.K), 1e-9)) * (model.tau / theta) * (0.9 + ratio / 12.0) / (1.0 + ratio / 30.0)
     tauI = theta * (30.0 + 3.0 * ratio) / (9.0 + 20.0 * ratio)
     return PIGains(Kc=float(Kc), tauI=float(max(tauI, 1e-6)))
 
@@ -81,6 +83,7 @@ def imc_pi(model: FOPDTModel, lambda_cl: float | None = None) -> PIGains:
 
     if lambda_cl is None:
         lambda_cl = max(model.theta, 0.25 * model.tau)
-    Kc = model.tau / (max(model.K, 1e-9) * (lambda_cl + model.theta))
+    direction = -1.0 if model.K < 0.0 else 1.0
+    Kc = direction * model.tau / (max(abs(model.K), 1e-9) * (lambda_cl + model.theta))
     tauI = model.tau
     return PIGains(Kc=float(Kc), tauI=float(max(tauI, 1e-6)))
