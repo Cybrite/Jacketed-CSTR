@@ -1,4 +1,4 @@
-# Dynamic Modeling and Reinforcement Learning Based Optimal PI Control of an Exothermic CSTR
+# Dynamic Modeling and PI Control of an Exothermic CSTR
 
 ## Problem Statement
 
@@ -8,25 +8,18 @@ This is a difficult control problem because the reactor is highly nonlinear, the
 
 ## Our Approach
 
-We solve the problem by combining classical process control with reinforcement learning. First, the nonlinear CSTR is modeled from material and energy balances and analyzed in open loop. Next, the model is linearized around a steady-state operating point to obtain a state-space model and transfer function for classical PI design. Standard PI tuning rules are then applied and compared.
+The project follows the classical process-control workflow described in George Stephanopoulos' treatment of process dynamics and control. First, the nonlinear CSTR is modeled from material and energy balances. Next, the model is linearized around a steady-state operating point to obtain a state-space model and transfer function. Standard PI tuning rules are then applied and compared.
 
-Finally, a DDPG-based reinforcement learning agent is trained to optimize the PI gains directly. This produces a data-driven controller design that can be compared against Ziegler-Nichols, Cohen-Coon, and IMC tuning for overshoot, settling time, rise time, and integral error metrics.
-
-The project follows a standard workflow used in advanced process control:
-
-`PROCESS -> DYNAMIC MODEL -> OPEN LOOP ANALYSIS -> CONTROLLER DESIGN -> CLASSICAL TUNING -> RL OPTIMIZATION`
-
-The objective is to compare classical PI tuning methods with a reinforcement-learning-based PI tuning strategy for temperature control of an unsafe and highly nonlinear reactor.
+The objective is to compare open-loop behavior with a closed-loop PI temperature controller where the manipulated variable is the feed flow rate $F$ and the controlled variable is the reactor temperature $T$.
 
 ## What The Project Does
 
 - Builds a nonlinear dynamic model of a jacketed exothermic CSTR
-- Simulates open-loop behavior under feed disturbances
+- Simulates open-loop behavior under feed-flow and feed-concentration disturbances
 - Linearizes the plant around a steady-state operating point
 - Computes state-space and transfer-function representations
 - Analyzes poles, zeros, eigenvalues, Bode plots, root locus, and step response
 - Designs and compares classical PI controllers
-- Trains a DDPG agent to optimize PI gains
 - Generates plots, tables, and saved model artifacts automatically
 
 ## Process Model
@@ -59,26 +52,25 @@ $$
 r_A = k_0 e^{-E/(RT)} C_A
 $$
 
+For the linear control design, the manipulated variable is the feed-flow deviation $F'(t)$ and the controlled output is the reactor-temperature deviation $T'(t)$.
+
 ## Control Workflow
 
 The implementation follows the classical process-control sequence:
 
 1. Simulate the nonlinear open-loop reactor
-2. Introduce disturbances in feed temperature and concentration
+2. Introduce disturbances in feed flow and concentration
 3. Linearize the process around a steady-state operating point
 4. Identify the open-loop dynamics and transfer function
 5. Design a PI controller
 6. Tune PI parameters using classical rules
 7. Compare closed-loop responses and performance indices
-8. Use reinforcement learning with DDPG to search for improved PI gains
-9. Compare RL-optimized and classical controllers
 
 ## Classical PI Tuning Methods
 
-The project includes three standard PI tuning approaches:
+The project includes two standard PI tuning approaches required by the assignment:
 
 - Ziegler-Nichols PI
-- Cohen-Coon PI
 - IMC PI
 
 For each method, the code computes:
@@ -90,22 +82,11 @@ For each method, the code computes:
 - settling time
 - IAE, ISE, and ITAE
 
-## Reinforcement Learning Approach
-
-The RL portion uses a continuous action formulation that directly searches over PI gains.
-
-- State: error, integral error, derivative of error
-- Action: continuous PI gains $(K_c, \tau_I)$
-- Algorithm: DDPG from Stable-Baselines3
-- Reward: penalizes tracking error, oscillation, overshoot, and control effort
-
-This is a practical way to tune PI controllers when the goal is to optimize continuous controller parameters directly.
-
 ## Project Structure
 
 - `models/` - reactor model and physical parameters
 - `controllers/` - PI controller and classical tuning rules
-- `simulation/` - open-loop and closed-loop analysis tools
+- `simulation/derivation.py` - symbolic derivation report for balances and transfer function
 - `rl/` - Gymnasium environment and DDPG training code
 - `plots/` - plotting and visualization utilities
 - `utils/` - metrics and FOPDT approximation helpers
@@ -119,9 +100,7 @@ Main dependencies:
 - `scipy`
 - `matplotlib`
 - `control`
-- `gymnasium`
-- `stable-baselines3`
-- `torch`
+- `sympy`
 
 Install them with:
 
@@ -140,34 +119,33 @@ python main.py
 The script will:
 
 - simulate the nonlinear open-loop reactor
+- print the governing equations and linearization report
 - analyze the linearized model
 - compare classical PI tuning methods
-- train a DDPG agent for PI gain optimization
 - generate all comparison plots and performance tables
-- save the trained RL model in `artifacts/models/`
+- save all figures in `artifacts/figures/`
 
 ## Outputs
 
 The project automatically saves:
 
 - open-loop response plots
+- process-control diagram
+- open-loop vs closed-loop comparison plot
 - linearized response plots
 - pole-zero maps
 - Bode plots
 - root locus plots
 - closed-loop comparison plots
-- RL reward convergence plots
-- PI gain evolution plots
 - performance summary tables
-- RL model checkpoints
 
 ## Notes
 
 - The reactor parameters are chosen to be representative of a realistic exothermic CSTR example used in advanced process control.
 - PI control is used instead of PID because thermal chemical processes are often noisy, slow, and well served by PI action.
-- The RL agent searches over continuous PI gains, which is well suited to DDPG.
+- The manipulated variable is feed flow rate, which is consistent with the professor's control objective.
 - The project is modular so the same nonlinear plant model can support future controller design or learning experiments.
 
 ## Purpose
 
-The project is intended to resemble a graduate-level process control and intelligent systems study based on classical reactor control theory combined with reinforcement learning.
+The project is intended to resemble a graduate-level process control study based on classical reactor control theory, steady-state analysis, linearization, and PI design.

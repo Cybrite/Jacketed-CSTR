@@ -7,6 +7,7 @@ from typing import Dict, Sequence
 
 import control
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, Rectangle
 import numpy as np
 
 from utils.metrics import ResponseMetrics
@@ -45,6 +46,29 @@ def plot_open_loop(time: np.ndarray, temperature: np.ndarray, concentration: np.
     axes[1].plot(time, concentration, color="#264653", lw=2)
     axes[1].set_ylabel("Concentration [mol/L]")
     axes[1].set_xlabel("Time [min]")
+    save_figure(fig, path)
+    plt.close(fig)
+
+
+
+def plot_open_vs_closed_loop(
+    open_loop_time: np.ndarray,
+    open_loop_temperature: np.ndarray,
+    closed_loop_time: np.ndarray,
+    closed_loop_temperature: np.ndarray,
+    setpoint: float,
+    path: Path,
+) -> None:
+    """Compare nonlinear open-loop and closed-loop temperature trajectories."""
+
+    fig, ax = plt.subplots()
+    ax.plot(open_loop_time, open_loop_temperature, color="#8d99ae", lw=2.2, label="Open loop")
+    ax.plot(closed_loop_time, closed_loop_temperature, color="#1d3557", lw=2.4, label="PI closed loop")
+    ax.axhline(setpoint, color="#b23a48", ls="--", lw=1.4, label="Setpoint")
+    ax.set_xlabel("Time [min]")
+    ax.set_ylabel("Reactor temperature [K]")
+    ax.set_title("Open-Loop vs Closed-Loop Temperature Response")
+    ax.legend()
     save_figure(fig, path)
     plt.close(fig)
 
@@ -197,5 +221,52 @@ def plot_metrics_table(metrics: Dict[str, ResponseMetrics], path: Path) -> None:
     table.set_fontsize(9)
     table.scale(1.0, 1.35)
     ax.set_title("Controller Performance Summary", pad=20)
+    save_figure(fig, path)
+    plt.close(fig)
+
+
+
+def plot_process_control_diagram(setpoint: float, path: Path) -> None:
+    """Draw a compact process-control diagram for the temperature loop."""
+
+    fig, ax = plt.subplots(figsize=(13, 5))
+    ax.set_xlim(0, 14)
+    ax.set_ylim(0, 8)
+    ax.axis("off")
+
+    reactor = Rectangle((5.2, 2.0), 3.0, 3.4, linewidth=2.0, edgecolor="#1d3557", facecolor="#e9f0f6")
+    controller = Rectangle((1.0, 4.9), 2.4, 1.2, linewidth=1.8, edgecolor="#b23a48", facecolor="#fdecea")
+    valve = Rectangle((3.3, 3.0), 1.2, 0.9, linewidth=1.6, edgecolor="#264653", facecolor="#e0f2f1")
+    jacket = Rectangle((5.0, 0.7), 3.4, 0.9, linewidth=1.6, edgecolor="#457b9d", facecolor="#edf6fb")
+
+    for patch in (reactor, controller, valve, jacket):
+        ax.add_patch(patch)
+
+    ax.text(6.7, 3.9, "Jacketed CSTR", ha="center", va="center", fontsize=14, weight="bold", color="#1d3557")
+    ax.text(6.7, 3.3, "State: [C_A, T]", ha="center", va="center", fontsize=11)
+    ax.text(2.2, 5.5, "PI Controller", ha="center", va="center", fontsize=12, weight="bold", color="#b23a48")
+    ax.text(4.0, 3.45, "Flow\nvalve", ha="center", va="center", fontsize=10)
+    ax.text(6.7, 1.15, "Cooling jacket", ha="center", va="center", fontsize=11, color="#457b9d")
+
+    arrows = [
+        FancyArrowPatch((0.4, 3.4), (3.3, 3.45), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#264653"),
+        FancyArrowPatch((4.5, 3.45), (5.2, 3.45), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#264653"),
+        FancyArrowPatch((8.2, 1.15), (12.2, 1.15), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#457b9d"),
+        FancyArrowPatch((8.2, 5.0), (12.0, 5.8), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#1d3557"),
+        FancyArrowPatch((6.7, 5.4), (6.7, 6.9), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#b23a48"),
+        FancyArrowPatch((1.0, 4.9), (1.0, 3.8), arrowstyle="->", mutation_scale=18, linewidth=2.0, color="#b23a48"),
+    ]
+    for arrow in arrows:
+        ax.add_patch(arrow)
+
+    ax.text(0.4, 3.7, "Feed stream", ha="left", va="bottom", fontsize=10)
+    ax.text(12.25, 5.8, "Measured T", ha="left", va="center", fontsize=10)
+    ax.text(12.25, 1.15, "Coolant T_c", ha="left", va="center", fontsize=10)
+    ax.text(6.7, 7.0, f"Setpoint T_sp = {setpoint:.1f} K", ha="center", va="bottom", fontsize=11, weight="bold")
+    ax.text(1.1, 3.75, "F", ha="left", va="bottom", fontsize=11, weight="bold")
+    ax.text(4.05, 2.65, "F", ha="center", va="top", fontsize=11, weight="bold", color="#264653")
+    ax.text(11.2, 5.95, "Controlled variable: T", ha="right", va="bottom", fontsize=10)
+    ax.text(11.2, 0.35, "Disturbance: coolant", ha="right", va="bottom", fontsize=10)
+
     save_figure(fig, path)
     plt.close(fig)

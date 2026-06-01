@@ -1,8 +1,8 @@
 """Process parameter definitions for the jacketed exothermic CSTR.
 
 The values are chosen to be representative of the classic exothermic CSTR
-example used in advanced process control textbooks. Units are kept consistent
-in engineering-style cal, g, L, min, and K units to avoid hidden conversion
+benchmark used in advanced process control texts. Units are kept consistent in
+engineering-style cal, g, L, min, and K units to avoid hidden conversion
 errors inside the dynamic equations.
 """
 
@@ -22,16 +22,18 @@ class CSTRParameters:
     T0: float = 350.0
     Tc0: float = 300.0
     UA: float = 5.0e4
-    deltaH: float = -2.0e5
-    E: float = 8.0e4
+    deltaH: float = -5.0e4
+    E: float = 1.738625e4
     R: float = 1.987
     k0: float = 7.2e10
     rho: float = 1000.0
     Cp: float = 0.239
+    F_min: float = 20.0
+    F_max: float = 180.0
     T_safe: float = 500.0
     Ca_min: float = 0.0
     T_min: float = 250.0
-    controller_bias: float = 300.0
+    F_bias: float = 100.0
     dt: float = 0.1
     episode_steps: int = 200
 

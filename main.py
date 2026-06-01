@@ -7,24 +7,22 @@ from pathlib import Path
 import control
 import numpy as np
 
-from controllers.pi import PIGains, cohen_coon_pi, imc_pi, ziegler_nichols_pi
+from controllers.pi import imc_pi, ziegler_nichols_pi
 from models.cstr import CSTRModel
 from models.parameters import default_parameters
 from plots.visualization import (
     configure_matplotlib,
     plot_bode,
     plot_closed_loop_comparison,
+    plot_open_vs_closed_loop,
     plot_linear_closed_loop_comparison,
-    plot_gain_history,
     plot_linear_step,
     plot_metrics_table,
     plot_open_loop,
     plot_pole_zero_map,
-    plot_reward_curve,
     plot_root_locus,
+    plot_process_control_diagram,
 )
-from rl.env import CSTRPITuningEnv, EnvironmentConfig
-from rl.train import train_ddpg_agent
 from simulation.analysis import (
     closed_loop_linear_response,
     classical_closed_loop_analysis,
@@ -32,6 +30,7 @@ from simulation.analysis import (
     linear_analysis,
     simulate_open_loop_disturbance,
 )
+from simulation.derivation import build_derivation_report
 from utils.fopdt import estimate_fopdt_from_step
 from utils.metrics import format_metric_rows
 
@@ -45,16 +44,22 @@ MODELS = ARTIFACTS / "models"
 def select_operating_point(model: CSTRModel) -> np.ndarray:
     """Find a steady-state candidate for analysis and control design."""
 
-    candidates = model.find_steady_state_candidates()
+    candidates = model.find_steady_state_candidates(F=model.params.F, Tc=model.params.Tc0)
     if not candidates:
-        state, _ = model.steady_state()
+        state, _ = model.steady_state(F=model.params.F, Tc=model.params.Tc0)
         return state
 
-    preferred = sorted(candidates, key=lambda item: (abs(item.T - 360.0), np.max(np.real(item.eigenvalues))))[0]
+    stable_candidates = [candidate for candidate in candidates if np.max(np.real(candidate.eigenvalues)) < 0.0]
+    ranked_candidates = stable_candidates if stable_candidates else candidates
+    preferred = sorted(
+        ranked_candidates,
+        key=lambda item: (abs(item.T - 325.0), abs(np.max(np.real(item.eigenvalues)))),
+    )[0]
     print("\nSteady-state candidates:")
     for candidate in candidates:
         dominant = float(np.max(np.real(candidate.eigenvalues)))
-        print(f"  Ca={candidate.Ca:.4f}, T={candidate.T:.2f} K, dominant eigenvalue={dominant:.4f}")
+        stability = "stable" if dominant < 0.0 else "unstable"
+        print(f"  Ca={candidate.Ca:.4f}, T={candidate.T:.2f} K, dominant eigenvalue={dominant:.4f} ({stability})")
     return np.array([preferred.Ca, preferred.T], dtype=float)
 
 
@@ -68,21 +73,44 @@ def main() -> None:
     params = default_parameters()
     model = CSTRModel(params)
     operating_point = select_operating_point(model)
+    Fss = float(params.F)
     setpoint = float(operating_point[1] + 5.0)
 
-    print(f"\nSelected operating point: Ca={operating_point[0]:.4f} mol/L, T={operating_point[1]:.2f} K")
+    print("\nProcess description:")
+    print("  Controlled variable y = T (reactor temperature)")
+    print("  Manipulated variable u = F (feed flow rate)")
+    print("  Disturbances = C_A0, T0, T_c")
+    print(f"\nSelected operating point: Ca={operating_point[0]:.4f} mol/L, T={operating_point[1]:.2f} K, Fss={Fss:.2f}")
     print(f"Control target setpoint: Tsp={setpoint:.2f} K")
+
+    report = build_derivation_report(params, operating_point, Fss)
+    print("\nGoverning equations and derivation:")
+    print(report.governing_equations)
+    print(report.steady_state_equations)
+    print(report.partial_derivatives)
+    print(report.linearized_equations)
+    print(report.transfer_function)
+
+    plot_process_control_diagram(setpoint, FIGURES / "process_control_diagram.png")
 
     print("\nRunning nonlinear open-loop disturbance simulation...")
     t_ol, Ca_ol, T_ol, _, _ = simulate_open_loop_disturbance(model, operating_point)
     plot_open_loop(t_ol, T_ol, Ca_ol, FIGURES / "open_loop_response.png")
 
     print("Computing linearized model and open-loop transfer function...")
-    linear_result = linear_analysis(model, operating_point, params.Tc0)
+    linear_result = linear_analysis(model, operating_point, Fss, params.Tc0)
     plot_linear_step(linear_result.step_time, linear_result.step_response, FIGURES / "linear_step_response.png")
     plot_pole_zero_map(linear_result.poles, linear_result.zeros, FIGURES / "pole_zero_map.png")
     plot_bode(linear_result.transfer_function, FIGURES / "bode_open_loop.png")
     plot_root_locus(linear_result.transfer_function, FIGURES / "root_locus.png")
+
+    print("\nState-space matrices:")
+    print("A =\n", np.array2string(linear_result.A, precision=6, suppress_small=True))
+    print("B =\n", np.array2string(linear_result.B, precision=6, suppress_small=True))
+    print("C =\n", np.array2string(linear_result.C, precision=6, suppress_small=True))
+    print("D =\n", np.array2string(linear_result.D, precision=6, suppress_small=True))
+    print("\nTransfer function G(s) = T'(s) / F'(s):")
+    print(linear_result.transfer_function)
 
     zeta_open, wn_open = dominant_second_order_characteristics(linear_result.poles)
     print(f"Open-loop dominant second-order estimate: zeta={zeta_open:.4f}, wn={wn_open:.4f}")
@@ -94,7 +122,6 @@ def main() -> None:
     imc_reference = imc_pi(fopdt)
     tuning_map = {
         "ZN-PI": ziegler_nichols_pi(fopdt),
-        "Cohen-Coon PI": cohen_coon_pi(fopdt),
         "IMC-PI": imc_reference,
     }
 
@@ -114,6 +141,17 @@ def main() -> None:
     plot_closed_loop_comparison(classical_results, setpoint, FIGURES / "classical_closed_loop_comparison.png")
     plot_metrics_table(classical_metrics, FIGURES / "classical_metrics_table.png")
 
+    imc_closed_loop_time = classical_results["IMC-PI"]["time"]
+    imc_closed_loop_temperature = classical_results["IMC-PI"]["temperature"]
+    plot_open_vs_closed_loop(
+        t_ol,
+        T_ol,
+        imc_closed_loop_time,
+        imc_closed_loop_temperature,
+        setpoint,
+        FIGURES / "open_vs_closed_loop.png",
+    )
+
     linear_closed_loop_results = {}
     for name, gains in tuning_map.items():
         closed_loop_tf, cl_time, cl_response = closed_loop_linear_response(
@@ -127,37 +165,6 @@ def main() -> None:
             "response": cl_response,
         }
     plot_linear_closed_loop_comparison(linear_closed_loop_results, FIGURES / "linear_closed_loop_comparison.png")
-
-    print("\nStarting reinforcement learning based PI optimization with DDPG...")
-    rl_config = EnvironmentConfig(
-        setpoint_temperature=setpoint,
-        Kc_bounds=(max(0.2, 0.5 * imc_reference.Kc), max(12.0, 3.0 * imc_reference.Kc)),
-        tauI_bounds=(max(0.2, 0.5 * imc_reference.tauI), max(8.0, 12.0 * imc_reference.tauI)),
-    )
-    env = CSTRPITuningEnv(model, rl_config)
-    rl_model, history = train_ddpg_agent(env, total_timesteps=30000, model_path=MODELS / "ddpg_cstr_pi")
-    plot_reward_curve(history.episode_rewards, FIGURES / "rl_reward_convergence.png")
-    plot_gain_history(history.action_trace, FIGURES / "rl_gain_evolution.png")
-
-    rl_gains = PIGains(*history.best_gains)
-    print(f"\nRL optimized gains: Kc={rl_gains.Kc:.4f}, tauI={rl_gains.tauI:.4f}")
-
-    rl_results = classical_closed_loop_analysis(
-        model=model,
-        operating_point=operating_point,
-        tuning_map={"RL-Optimized PI": rl_gains},
-        setpoint=setpoint,
-    )
-    rl_metrics = rl_results["RL-Optimized PI"]["metrics"]
-
-    comparison_metrics = {
-        **classical_metrics,
-        "RL-Optimized PI": rl_metrics,
-    }
-    print("\nFinal comparison table:")
-    print(format_metric_rows(comparison_metrics))
-    plot_closed_loop_comparison({**classical_results, **rl_results}, setpoint, FIGURES / "all_closed_loop_comparison.png")
-    plot_metrics_table(comparison_metrics, FIGURES / "all_metrics_table.png")
 
     print("\nArtifacts saved to:")
     print(f"  Figures: {FIGURES.resolve()}")

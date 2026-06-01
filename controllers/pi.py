@@ -24,7 +24,7 @@ class PIController:
     balance. Industrial reactor temperature loops therefore commonly use PI.
     """
 
-    def __init__(self, Kc: float, tauI: float, bias: float, u_min: float = 250.0, u_max: float = 450.0):
+    def __init__(self, Kc: float, tauI: float, bias: float, u_min: float = 0.0, u_max: float = 500.0):
         self.gains = PIGains(Kc=float(Kc), tauI=float(tauI))
         self.bias = float(bias)
         self.u_min = float(u_min)
@@ -37,7 +37,7 @@ class PIController:
         self.last_output = self.bias
 
     def compute(self, setpoint: float, measurement: float, dt: float) -> float:
-        """Compute the coolant-temperature command."""
+        """Compute the manipulated feed-flow command."""
 
         error = float(setpoint - measurement)
         self.integral_error += error * dt

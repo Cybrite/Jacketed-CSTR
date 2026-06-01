@@ -35,45 +35,48 @@ def simulate_open_loop_disturbance(
     time_final: float = 60.0,
     dt: float = 0.1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate the nonlinear reactor with feed disturbances and fixed coolant temperature."""
+    """Simulate the nonlinear reactor with feed-flow and feed-concentration disturbances."""
 
     time_eval = np.arange(0.0, time_final + dt, dt)
 
-    def coolant_temperature(t: float) -> float:
-        return model.params.Tc0
-
-    def feed_temperature(t: float) -> float:
-        if t < 15.0:
-            return model.params.T0
-        if t < 35.0:
-            return model.params.T0 + 8.0
-        return model.params.T0 + 5.0
+    def feed_flow(t: float) -> float:
+        if t < 18.0:
+            return model.params.F
+        if t < 38.0:
+            return 0.85 * model.params.F
+        return 1.10 * model.params.F
 
     def feed_concentration(t: float) -> float:
-        if t < 25.0:
+        if t < 28.0:
             return model.params.Ca0
-        return model.params.Ca0 * 1.15
+        return model.params.Ca0 * 1.12
 
     result = model.simulate_open_loop(
         time_span=(0.0, time_final),
         initial_state=steady_state,
-        Tc_profile=coolant_temperature,
+        F_profile=feed_flow,
+        Tc_profile=lambda t: model.params.Tc0,
         Ca0_profile=feed_concentration,
-        T0_profile=feed_temperature,
+        T0_profile=lambda t: model.params.T0,
         time_eval=time_eval,
     )
-    Tc = np.full_like(result.t, model.params.Tc0, dtype=float)
+    F = np.array([feed_flow(t) for t in result.t], dtype=float)
     Ca0 = np.array([feed_concentration(t) for t in result.t], dtype=float)
-    T0 = np.array([feed_temperature(t) for t in result.t], dtype=float)
-    return result.t, result.y[0], result.y[1], Tc, np.vstack([Ca0, T0])
+    return result.t, result.y[0], result.y[1], F, np.vstack([Ca0, np.full_like(Ca0, model.params.T0)])
 
 
 
-def linear_analysis(model: CSTRModel, operating_point: np.ndarray, Tc: float, time_final: float = 50.0) -> LinearAnalysisResult:
+def linear_analysis(
+    model: CSTRModel,
+    operating_point: np.ndarray,
+    F: float,
+    Tc: float,
+    time_final: float = 50.0,
+) -> LinearAnalysisResult:
     """Linearize the CSTR and generate the corresponding step response."""
 
     time = np.linspace(0.0, time_final, 500)
-    A, B, C, D = model.linearize(operating_point, Tc)
+    A, B, C, D = model.linearize(operating_point, F, Tc)
     state_space = control.ss(A, B, C, D)
     transfer_function = control.ss2tf(state_space)
     poles = control.poles(transfer_function)
@@ -122,22 +125,28 @@ def simulate_closed_loop_step(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Simulate a nonlinear closed-loop PI controlled reactor."""
 
-    controller = PIController(gains.Kc, gains.tauI, bias=model.params.Tc0)
+    controller = PIController(
+        gains.Kc,
+        gains.tauI,
+        bias=model.params.F,
+        u_min=model.params.F_min,
+        u_max=model.params.F_max,
+    )
     controller.reset()
     time = np.arange(0.0, time_final + dt, dt)
     state = np.asarray(operating_point, dtype=float).copy()
     temperatures = np.empty_like(time)
-    coolants = np.empty_like(time)
+    flows = np.empty_like(time)
 
     for index, _ in enumerate(time):
         temperatures[index] = state[1]
-        coolants[index] = controller.compute(setpoint=setpoint, measurement=state[1], dt=dt)
-        state = _rk4_step(model, state, coolants[index], dt)
+        flows[index] = controller.compute(setpoint=setpoint, measurement=state[1], dt=dt)
+        state = _rk4_step(model, state, flows[index], dt)
         if not np.all(np.isfinite(state)):
             temperatures[index:] = np.nan
-            coolants[index:] = np.nan
+            flows[index:] = np.nan
             break
-    return time, temperatures, coolants
+    return time, temperatures, flows
 
 
 
@@ -158,7 +167,7 @@ def classical_closed_loop_analysis(
 
     results: Dict[str, Dict[str, object]] = {}
     for name, gains in tuning_map.items():
-        time, temperature, coolant = simulate_closed_loop_step(
+        time, temperature, flow = simulate_closed_loop_step(
             model=model,
             gains=gains,
             setpoint=setpoint,
@@ -168,7 +177,7 @@ def classical_closed_loop_analysis(
         results[name] = {
             "time": time,
             "temperature": temperature,
-            "coolant": coolant,
+            "flow": flow,
             "metrics": metrics,
             "gains": gains,
         }
@@ -192,11 +201,11 @@ def dominant_second_order_characteristics(poles: np.ndarray) -> Tuple[float, flo
 
 
 
-def _rk4_step(model: CSTRModel, state: np.ndarray, Tc: float, dt: float) -> np.ndarray:
-    """Fixed-step RK4 integrator for fast RL rollouts."""
+def _rk4_step(model: CSTRModel, state: np.ndarray, F: float, dt: float) -> np.ndarray:
+    """Fixed-step RK4 integrator for the nonlinear CSTR."""
 
-    k1 = model.dynamics(0.0, state, Tc)
-    k2 = model.dynamics(0.0, state + 0.5 * dt * k1, Tc)
-    k3 = model.dynamics(0.0, state + 0.5 * dt * k2, Tc)
-    k4 = model.dynamics(0.0, state + dt * k3, Tc)
+    k1 = model.dynamics(0.0, state, F)
+    k2 = model.dynamics(0.0, state + 0.5 * dt * k1, F)
+    k3 = model.dynamics(0.0, state + 0.5 * dt * k2, F)
+    k4 = model.dynamics(0.0, state + dt * k3, F)
     return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
