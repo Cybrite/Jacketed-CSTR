@@ -345,6 +345,24 @@ In plain English, it does this:
 8. create the plots with [plots/visualization.py](plots/visualization.py)
 9. print the performance table using [utils/metrics.py](utils/metrics.py)
 
+## Performance indices (IAE, ISE, ITAE)
+
+This project computes standard integral error measures to quantify control performance. Let the tracking error be $e(t)=r(t)-y(t)$ where $r(t)$ is the setpoint and $y(t)$ is the measured output ($T_R$). The integrals used are:
+
+- IAE (Integral of Absolute Error):
+
+$$IAE = \int_0^{T} |e(t)|\,dt$$
+
+- ISE (Integral of Squared Error):
+
+$$ISE = \int_0^{T} e(t)^2\,dt$$
+
+- ITAE (Integral of Time-weighted Absolute Error):
+
+$$ITAE = \int_0^{T} t\,|e(t)|\,dt$$
+
+These measures are computed numerically in [utils/metrics.py](utils/metrics.py) using trapezoidal integration over the simulation time grid.
+
 ## Current Outputs
 
 The project saves figures in `artifacts/figures/`.
