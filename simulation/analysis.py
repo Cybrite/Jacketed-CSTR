@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import control
 import numpy as np
@@ -153,6 +153,67 @@ def simulate_closed_loop_step(
 
 
 
+def simulate_closed_loop_disturbance_rejection(
+    model: CSTRModel,
+    gains: PIGains,
+    setpoint: float,
+    operating_point: np.ndarray,
+    disturbance: str,
+    time_final: float = 80.0,
+    dt: float = 0.1,
+    disturbance_time: float = 20.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Simulate a PI closed-loop response to a load disturbance."""
+
+    controller = PIController(
+        gains.Kc,
+        gains.tauI,
+        bias=model.params.Fc,
+        u_min=model.params.Fc_min,
+        u_max=model.params.Fc_max,
+    )
+    controller.reset()
+    time = np.arange(0.0, time_final + dt, dt)
+    state = np.asarray(operating_point, dtype=float).copy()
+    temperatures = np.empty_like(time)
+    flows = np.empty_like(time)
+    disturbance_trace = np.empty_like(time)
+
+    for index, current_time in enumerate(time):
+        if disturbance == "ca0":
+            load = model.params.Ca0 if current_time < disturbance_time else 1.12 * model.params.Ca0
+            disturbance_trace[index] = load
+            Ca0 = load
+            T0 = model.params.T0
+            Tcin = model.params.Tcin0
+        elif disturbance == "t0":
+            load = model.params.T0 if current_time < disturbance_time else model.params.T0 + 8.0
+            disturbance_trace[index] = load
+            Ca0 = model.params.Ca0
+            T0 = load
+            Tcin = model.params.Tcin0
+        elif disturbance == "tcin":
+            load = model.params.Tcin0 if current_time < disturbance_time else model.params.Tcin0 + 5.0
+            disturbance_trace[index] = load
+            Ca0 = model.params.Ca0
+            T0 = model.params.T0
+            Tcin = load
+        else:
+            raise ValueError(f"Unsupported disturbance type: {disturbance}")
+
+        temperatures[index] = state[1]
+        flows[index] = controller.compute(setpoint=setpoint, measurement=state[1], dt=dt)
+        state = _rk4_step(model, state, flows[index], dt, Ca0=Ca0, T0=T0, Tcin=Tcin)
+        if not np.all(np.isfinite(state)):
+            temperatures[index:] = np.nan
+            flows[index:] = np.nan
+            disturbance_trace[index:] = np.nan
+            break
+
+    return time, temperatures, flows, disturbance_trace
+
+
+
 def closed_loop_metrics(time: np.ndarray, response: np.ndarray, setpoint: float) -> ResponseMetrics:
     """Compute standard performance indices and transient-response metrics."""
 
@@ -204,11 +265,19 @@ def dominant_second_order_characteristics(poles: np.ndarray) -> Tuple[float, flo
 
 
 
-def _rk4_step(model: CSTRModel, state: np.ndarray, Fc: float, dt: float) -> np.ndarray:
+def _rk4_step(
+    model: CSTRModel,
+    state: np.ndarray,
+    Fc: float,
+    dt: float,
+    Ca0: Optional[float] = None,
+    T0: Optional[float] = None,
+    Tcin: Optional[float] = None,
+) -> np.ndarray:
     """Fixed-step RK4 integrator for the nonlinear CSTR."""
 
-    k1 = model.dynamics(0.0, state, Fc=Fc, F=model.params.F)
-    k2 = model.dynamics(0.0, state + 0.5 * dt * k1, Fc=Fc, F=model.params.F)
-    k3 = model.dynamics(0.0, state + 0.5 * dt * k2, Fc=Fc, F=model.params.F)
-    k4 = model.dynamics(0.0, state + dt * k3, Fc=Fc, F=model.params.F)
+    k1 = model.dynamics(0.0, state, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
+    k2 = model.dynamics(0.0, state + 0.5 * dt * k1, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
+    k3 = model.dynamics(0.0, state + 0.5 * dt * k2, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
+    k4 = model.dynamics(0.0, state + dt * k3, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
     return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)

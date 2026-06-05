@@ -1141,4 +1141,39 @@ The jacketed exothermic CSTR is a third-order nonlinear process with reactor con
 
 The derivation shows the full classical workflow used in chemical process control: nonlinear modeling, steady-state analysis, deviation variables, linearization, transfer-function derivation, open-loop analysis, PI controller design, and closed-loop performance comparison.
 
+## 24. Closed-Loop Disturbance Rejection
+
+The project now also includes closed-loop disturbance-rejection plots for the PI-controlled reactor. Two load disturbances are evaluated:
+
+- a feed concentration step
+- a feed temperature step
+
+For each disturbance, the response is simulated for both ZN-PI and IMC-PI and the results are saved as:
+
+- [Closed-loop disturbance rejection: feed concentration](artifacts/figures/closed_loop_disturbance_rejection_ca0.png)
+- [Closed-loop disturbance rejection: feed temperature](artifacts/figures/closed_loop_disturbance_rejection_t0.png)
+
+The new plots show that the IMC tuning remains the more conservative and better-damped controller when the reactor is subjected to load disturbances, while ZN-PI reacts more aggressively and tends to produce larger temperature excursions.
+
+## 25. Updated Results Summary
+
+The complete figure set now includes the setpoint-tracking plots and the new disturbance-rejection plots. In the latest project run, the IMC-PI controller continued to provide the best tradeoff between speed and robustness, especially when the reactor experienced feed-side disturbances. The ZN-PI controller remained usable, but it was more aggressive and less well damped.
+
+Latest setpoint-tracking metrics from the current run:
+
+| Method |  OS % | Settling [min] |    IAE |    ISE |   ITAE |
+| ------ | ----: | -------------: | -----: | -----: | -----: |
+| ZN-PI  | 42.69 |           4.10 | 3.5925 | 5.9083 | 3.4203 |
+| IMC-PI | 29.72 |           1.30 | 1.6243 | 4.1197 | 0.6453 |
+
+For disturbance rejection, the new figures show the same qualitative ordering: IMC-PI returns the reactor temperature to the setpoint faster and with smaller excursion than ZN-PI for both the feed concentration step and the feed temperature step.
+
+Relevant generated figures now include:
+
+- [Open-loop response](artifacts/figures/open_loop_response.png)
+- [Open vs closed loop](artifacts/figures/open_vs_closed_loop.png)
+- [Closed-loop disturbance rejection: feed concentration](artifacts/figures/closed_loop_disturbance_rejection_ca0.png)
+- [Closed-loop disturbance rejection: feed temperature](artifacts/figures/closed_loop_disturbance_rejection_t0.png)
+- [Classical closed-loop comparison](artifacts/figures/classical_closed_loop_comparison.png)
+
 The IMC PI controller is the better choice here because it gives lower overshoot and lower integral error than the Ziegler–Nichols controller.

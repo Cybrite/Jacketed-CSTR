@@ -79,6 +79,41 @@ def plot_open_vs_closed_loop(
 
 
 
+def plot_closed_loop_disturbance_rejection(
+    results: Dict[str, Dict[str, np.ndarray]],
+    disturbance_label: str,
+    setpoint: float,
+    path: Path,
+) -> None:
+    """Compare closed-loop load-disturbance rejection for multiple controllers."""
+
+    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
+    color_map = {
+        "ZN-PI": "#b23a48",
+        "IMC-PI": "#1d3557",
+    }
+
+    for name, payload in results.items():
+        color = color_map.get(name, None)
+        axes[0].plot(payload["time"], payload["temperature"], lw=2.2, label=name, color=color)
+        axes[1].plot(payload["time"], payload["flow"], lw=2.0, label=name, color=color)
+
+    reference = next(iter(results.values()))
+    axes[0].axhline(setpoint, color="black", ls="--", lw=1.2, label="Setpoint")
+    axes[2].plot(reference["time"], reference["disturbance"], color="#457b9d", lw=2.0)
+
+    axes[0].set_ylabel("T_R [K]")
+    axes[0].set_title(f"Closed-Loop Disturbance Rejection: {disturbance_label}")
+    axes[1].set_ylabel("F_C [L/min]")
+    axes[2].set_ylabel("Disturbance")
+    axes[2].set_xlabel("Time [min]")
+    axes[0].legend(loc="best")
+    axes[1].legend(loc="best")
+    save_figure(fig, path)
+    plt.close(fig)
+
+
+
 def plot_linear_step(time: np.ndarray, response: np.ndarray, path: Path) -> None:
     fig, ax = plt.subplots()
     ax.plot(time, response, color="#1d3557", lw=2)

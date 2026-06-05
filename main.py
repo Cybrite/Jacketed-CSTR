@@ -13,6 +13,7 @@ from models.parameters import default_parameters
 from plots.visualization import (
     configure_matplotlib,
     plot_bode,
+    plot_closed_loop_disturbance_rejection,
     plot_closed_loop_comparison,
     plot_open_vs_closed_loop,
     plot_linear_closed_loop_comparison,
@@ -28,6 +29,7 @@ from simulation.analysis import (
     classical_closed_loop_analysis,
     dominant_second_order_characteristics,
     linear_analysis,
+    simulate_closed_loop_disturbance_rejection,
     simulate_open_loop_disturbance,
 )
 from simulation.derivation import build_derivation_report
@@ -151,6 +153,37 @@ def main() -> None:
         setpoint,
         FIGURES / "open_vs_closed_loop.png",
     )
+
+    disturbance_cases = {
+        "Feed concentration step": "ca0",
+        "Feed temperature step": "t0",
+    }
+    disturbance_plot_map = {
+        "Feed concentration step": FIGURES / "closed_loop_disturbance_rejection_ca0.png",
+        "Feed temperature step": FIGURES / "closed_loop_disturbance_rejection_t0.png",
+    }
+    for label, disturbance_key in disturbance_cases.items():
+        rejection_results = {}
+        for name, gains in tuning_map.items():
+            time, temperature, flow, disturbance_trace = simulate_closed_loop_disturbance_rejection(
+                model=model,
+                gains=gains,
+                setpoint=setpoint,
+                operating_point=operating_point,
+                disturbance=disturbance_key,
+            )
+            rejection_results[name] = {
+                "time": time,
+                "temperature": temperature,
+                "flow": flow,
+                "disturbance": disturbance_trace,
+            }
+        plot_closed_loop_disturbance_rejection(
+            rejection_results,
+            label,
+            setpoint,
+            disturbance_plot_map[label],
+        )
 
     linear_closed_loop_results = {}
     for name, gains in tuning_map.items():
