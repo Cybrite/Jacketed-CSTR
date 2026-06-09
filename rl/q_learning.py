@@ -1,4 +1,4 @@
-"""Tabular Q-learning implementation for CSTR PI tuning."""
+"""Tabular Q-learning implementation with Compact High-Exploration State Grid."""
 
 from __future__ import annotations
 
@@ -21,28 +21,37 @@ class TabularQLearningAgent:
         self.kc_actions = kc_actions
         self.tau_actions = tau_actions
         
-        # Build 10 discrete quantization bins per observation dimension
-        self.num_bins = 10
+        # Compact high-density thresholds clustering near zero error 
+        # This keeps the total state-space fully explorable within 2,000 episodes
         self.state_bins = [
-            np.linspace(-2.0, 2.0, self.num_bins - 1),  # Normalized Error
-            np.linspace(-2.0, 2.0, self.num_bins - 1),  # Normalized Integral Error
-            np.linspace(-2.0, 2.0, self.num_bins - 1)   # Normalized Derivative Error
+            np.array([-0.5, -0.05, 0.05, 0.5]),  # Normalized Error
+            np.array([-0.5, -0.05, 0.05, 0.5]),  # Normalized Integral Error
+            np.array([-1.0, -0.1, 0.1, 1.0])    # Normalized Derivative Error
         ]
         
-        # Q-Table Shape: (10, 10, 10, len(Kc), len(tauI))
-        self.q_table = np.zeros((self.num_bins, self.num_bins, self.num_bins, len(kc_actions), len(tau_actions)))
-        self.alpha = 0.12
-        self.gamma = 0.98
+        self.num_bins_err = len(self.state_bins[0]) + 1
+        self.num_bins_int = len(self.state_bins[1]) + 1
+        self.num_bins_der = len(self.state_bins[2]) + 1
+        
+        # FIX: Pessimistic Initialization. Defaulting cells to -10000.0 forces the greedy policy 
+        # to select known stable trajectories instead of picking unvisited zero-value boundaries.
+        self.q_table = np.full(
+            (self.num_bins_err, self.num_bins_int, self.num_bins_der, len(kc_actions), len(tau_actions)),
+            -10000.0,
+            dtype=float
+        )
+        self.alpha = 0.15
+        self.gamma = 0.96  
         self.epsilon = 1.0
-        self.epsilon_decay = 0.992
-        self.epsilon_min = 0.02
+        self.epsilon_decay = 0.995
+        self.epsilon_min = 0.01
 
     def discretize_observation(self, obs: np.ndarray) -> Tuple[int, int, int]:
-        """Map continuous environment observations into discrete grid indices."""
+        """Map continuous observations into precise logarithmic coordinate bins."""
         return (
-            int(np.digitize(obs[0], self.state_bins[0])),
-            int(np.digitize(obs[1], self.state_bins[1])),
-            int(np.digitize(obs[2], self.state_bins[2]))
+            int(np.clip(np.digitize(obs[0], self.state_bins[0]), 0, self.num_bins_err - 1)),
+            int(np.clip(np.digitize(obs[1], self.state_bins[1]), 0, self.num_bins_int - 1)),
+            int(np.clip(np.digitize(obs[2], self.state_bins[2]), 0, self.num_bins_der - 1))
         )
 
     def select_action_indices(self, state_idx: Tuple[int, int, int], explore: bool = True) -> Tuple[int, int]:
@@ -63,11 +72,11 @@ class TabularQLearningAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
 
-def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 1200) -> Tuple[TabularQLearningAgent, QLearningHistory]:
-    """Train a discrete tabular Q-learning matrix over the non-linear reactor bounds."""
-    # Action grid structured directly within the operational bounds
-    kc_actions = np.linspace(-20.0, -1.0, 12)
-    tau_actions = np.linspace(0.2, 4.0, 12)
+def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 2000) -> Tuple[TabularQLearningAgent, QLearningHistory]:
+    """Train a high-resolution tabular matrix over the non-linear reactor bounds."""
+    # Action spaces bounded securely around your classical baselines to stop arithmetic overflows
+    kc_actions = np.array([-16.0, -13.0, -10.0, -8.0, -5.0, -2.0])
+    tau_actions = np.array([0.2, 0.35, 0.5, 1.0, 5.0, 20.0])
     
     agent = TabularQLearningAgent(kc_actions, tau_actions)
     episode_rewards = []
@@ -77,24 +86,31 @@ def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 1200) -> 
         state_idx = agent.discretize_observation(obs)
         total_reward = 0.0
         done = False
+        prev_action_idx = None
 
         while not done:
             kc_idx, tau_idx = agent.select_action_indices(state_idx, explore=True)
             action = np.array([kc_actions[kc_idx], tau_actions[tau_idx]])
             
             next_obs, reward, terminated, truncated, _ = model_env.step(action)
+            
+            # Penalize radical controller parameter changes between steps to stabilize actuation
+            if prev_action_idx is not None:
+                gain_change_penalty = 1.5 * (abs(kc_idx - prev_action_idx[0]) + abs(tau_idx - prev_action_idx[1]))
+                reward -= gain_change_penalty
+            
             next_state_idx = agent.discretize_observation(next_obs)
             done = terminated or truncated
 
             agent.update(state_idx, (kc_idx, tau_idx), reward, next_state_idx, done)
             
             state_idx = next_state_idx
+            prev_action_idx = (kc_idx, tau_idx)
             total_reward += reward
 
         agent.decay_exploration()
         episode_rewards.append(total_reward)
 
-    # Extract final optimal greedy parameter choices
     final_obs, _ = model_env.reset()
     final_state = agent.discretize_observation(final_obs)
     k_idx, t_idx = agent.select_action_indices(final_state, explore=False)

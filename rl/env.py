@@ -25,7 +25,7 @@ class EnvironmentConfig:
 
 
 class CSTRPITuningEnv(gym.Env):
-    """Continuous control environment where actions are held over a macro horizon."""
+    """Continuous control environment optimized for smooth macro-horizon tuning."""
 
     metadata = {"render_modes": []}
 
@@ -73,12 +73,12 @@ class CSTRPITuningEnv(gym.Env):
             self._rng = np.random.default_rng(seed)
             
         base_state = self._ss_state.copy()
-        base_state[1] = self.config.setpoint_temperature - 5.0
+        base_state[1] = self.config.setpoint_temperature - 3.0  
         
         perturbation = np.array([
-            self._rng.normal(0.0, 0.002),
-            self._rng.normal(0.0, 1.5),
+            self._rng.normal(0.0, 0.001),
             self._rng.normal(0.0, 1.0),
+            self._rng.normal(0.0, 0.5),
         ])
         
         self._state = base_state + perturbation
@@ -86,8 +86,8 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count = 0
         self._previous_error = self.config.setpoint_temperature - self._state[1]
         self._integral_error = 0.0
-        self._disturbance_offset_T = float(self._rng.uniform(-2.0, 4.0))
-        self._disturbance_offset_Ca = float(self._rng.uniform(-0.05, 0.05))
+        self._disturbance_offset_T = float(self._rng.uniform(-1.0, 2.0))
+        self._disturbance_offset_Ca = float(self._rng.uniform(-0.02, 0.02))
         return self._get_observation(), {}
 
     def step(self, action):
@@ -96,9 +96,8 @@ class CSTRPITuningEnv(gym.Env):
         
         total_reward = 0.0
         instability = False
-        hold_steps = 10  # Enforce a 1.0 minute action-holding frame skip
+        hold_steps = 10  
         
-        # FIX: Loop through the process dynamics internally using the same static gain pair
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
             self._integral_error += error * self.config.dt
@@ -109,7 +108,8 @@ class CSTRPITuningEnv(gym.Env):
 
             next_state = self._rk4_step(self._state, flow)
             
-            instability = not np.all(np.isfinite(next_state)) or next_state[1] > 1000.0
+            # Catch intermediate integration divergence before the loop finishes
+            instability = not np.all(np.isfinite(next_state)) or next_state[1] > 600.0 or next_state[1] < 150.0
             if instability:
                 next_state = np.array([0.0, self.config.safety_temperature, self.model.params.Tcin0], dtype=float)
 
@@ -121,8 +121,7 @@ class CSTRPITuningEnv(gym.Env):
             normalized_overshoot = overshoot / error_scale
             normalized_delta_error = (next_error - error) / error_scale
 
-            # Accumulate reward components cleanly across the step window
-            step_reward = -(4.0 * normalized_error**2 + 8.0 * normalized_overshoot**2 + 0.3 * normalized_delta_error**2)
+            step_reward = -(5.0 * normalized_error**2 + 12.0 * normalized_overshoot**2 + 0.4 * normalized_delta_error**2)
             total_reward += step_reward
 
             self._previous_error = error
@@ -134,7 +133,7 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count += 1
 
         if self._state[1] > 0.95 * self.config.safety_temperature:
-            total_reward -= 15.0
+            total_reward -= 20.0
 
         terminated = bool(
             instability 
@@ -144,9 +143,9 @@ class CSTRPITuningEnv(gym.Env):
         truncated = self._step_count >= (self.config.episode_steps // hold_steps)
 
         if terminated:
-            total_reward -= 100.0
+            total_reward -= 150.0
         elif truncated:
-            total_reward += 10.0
+            total_reward += 15.0
 
         observation = self._get_observation()
         info = {

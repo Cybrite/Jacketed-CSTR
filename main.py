@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import control
 import numpy as np
 
@@ -54,9 +55,13 @@ def select_operating_point(model: CSTRModel) -> np.ndarray:
     if not candidates:
         state, _ = model.steady_state(F=model.params.F, Fc=model.params.Fc, Tcin=model.params.Tcin0)
         return state
+
     stable_candidates = [candidate for candidate in candidates if np.max(np.real(candidate.eigenvalues)) < 0.0]
     ranked_candidates = stable_candidates if stable_candidates else candidates
-    preferred = sorted(ranked_candidates, key=lambda item: (abs(item.TR - 325.0), abs(np.max(np.real(item.eigenvalues)))))[0]
+    preferred = sorted(
+        ranked_candidates,
+        key=lambda item: (abs(item.TR - 325.0), abs(np.max(np.real(item.eigenvalues)))),
+    )[0]
     return np.array([preferred.Ca, preferred.TR, preferred.TJ], dtype=float)
 
 
@@ -120,7 +125,7 @@ def main() -> None:
     
     plot_reward_curve(q_history.episode_rewards, FIGURES / "q_learning_reward_curve.png")
 
-    # FIX: Create a macro-step holding wrapper for evaluation rollouts
+    # Macro-step holding wrapper for evaluation rollouts
     class QPolicyHoldWrapper:
         def __init__(self, agent, hold_steps=10):
             self.agent = agent
@@ -139,6 +144,7 @@ def main() -> None:
     q_policy = QPolicyHoldWrapper(q_agent, hold_steps=10)
 
     print("Evaluating Q-Learning step response...")
+    # FIX: Explicitly set observation_horizon=20.0 to match the training environment scaling bounds
     q_time, q_temp, q_flow, q_gains, _ = simulate_closed_loop_policy(
         model=model,
         policy_fn=q_policy,
@@ -146,10 +152,11 @@ def main() -> None:
         operating_point=operating_point,
         time_final=80.0,
         dt=float(params.dt),
+        observation_horizon=20.0,
     )
     plot_gain_history(q_gains, FIGURES / "q_learning_gain_history.png")
 
-    # Merge Results for Performance Summary
+    # Combine Classical and RL for Step Response Analysis
     rl_results = {
         "Q-learning": {
             "time": q_time,
@@ -170,7 +177,7 @@ def main() -> None:
     plot_closed_loop_comparison(combined_results, setpoint, FIGURES / "classical_and_rl_closed_loop_comparison.png")
     plot_metrics_table(combined_metrics, FIGURES / "classical_and_rl_metrics_table.png")
 
-    # --- DISTURBANCE REJECTION ANALYSIS WITH RL ---
+    # --- DISTURBANCE REJECTION ANALYSIS ---
     print("\nRunning Disturbance Rejection Analysis for all controllers...")
     disturbance_cases = {
         "Feed concentration step": "ca0",
@@ -184,6 +191,7 @@ def main() -> None:
     for label, disturbance_key in disturbance_cases.items():
         rejection_results = {}
         
+        # 1. Simulate ZN and IMC
         for name, gains in tuning_map.items():
             time, temperature, flow, disturbance_trace = simulate_closed_loop_disturbance_rejection(
                 model=model,
@@ -199,6 +207,8 @@ def main() -> None:
                 "disturbance": disturbance_trace,
             }
             
+        # 2. Simulate RL Q-Learning Agent
+        # FIX: Explicitly set observation_horizon=20.0 here as well to balance disturbances safely
         rl_d_time, rl_d_temp, rl_d_flow, _, rl_d_trace = simulate_closed_loop_policy(
             model=model,
             policy_fn=q_policy,
@@ -207,6 +217,7 @@ def main() -> None:
             time_final=40.0,
             dt=float(params.dt),
             disturbance=disturbance_key,
+            observation_horizon=20.0,
         )
         
         rejection_results["Q-learning"] = {
@@ -216,6 +227,7 @@ def main() -> None:
             "disturbance": rl_d_trace,
         }
 
+        # 3. Plot Combined Disturbance Rejection
         plot_closed_loop_disturbance_rejection(
             rejection_results,
             label,
@@ -223,6 +235,7 @@ def main() -> None:
             disturbance_plot_map[label],
         )
 
+    # Linear comparison mappings
     linear_closed_loop_results = {}
     for name, gains in tuning_map.items():
         closed_loop_tf, cl_time, cl_response = closed_loop_linear_response(
@@ -239,7 +252,6 @@ def main() -> None:
     print(f"  Figures: {FIGURES.resolve()}")
     print(f"  Models:  {MODELS.resolve()}")
     print("\nEnd-to-end workflow complete.")
-
 
 if __name__ == "__main__":
     main()
