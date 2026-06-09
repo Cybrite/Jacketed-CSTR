@@ -159,7 +159,7 @@ def simulate_closed_loop_disturbance_rejection(
     setpoint: float,
     operating_point: np.ndarray,
     disturbance: str,
-    time_final: float = 80.0,
+    time_final: float = 40.0,
     dt: float = 0.1,
     disturbance_time: float = 20.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
