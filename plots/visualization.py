@@ -91,6 +91,7 @@ def plot_closed_loop_disturbance_rejection(
     color_map = {
         "ZN-PI": "#b23a48",
         "IMC-PI": "#1d3557",
+        "Q-learning": "#2a9d8f", # Maps the color directly to your Q-learning plot lines
     }
 
     for name, payload in results.items():
@@ -209,7 +210,8 @@ def plot_linear_closed_loop_comparison(results: Dict[str, Dict[str, object]], pa
 
 
 def plot_gain_history(actions: Sequence[Sequence[float]], path: Path) -> None:
-    if not actions:
+    # FIX: Use len() check to prevent multi-element ambiguity crashes
+    if actions is None or len(actions) == 0:
         return
     arr = np.asarray(actions, dtype=float)
     fig, ax = plt.subplots(2, 1, sharex=True)
@@ -225,7 +227,8 @@ def plot_gain_history(actions: Sequence[Sequence[float]], path: Path) -> None:
 
 
 def plot_reward_curve(rewards: Sequence[float], path: Path) -> None:
-    if not rewards:
+    # FIX: Use len() check to prevent multi-element ambiguity crashes
+    if rewards is None or len(rewards) == 0:
         return
     fig, ax = plt.subplots()
     ax.plot(rewards, color="#264653", lw=2)

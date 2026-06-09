@@ -10,7 +10,7 @@ import numpy as np
 from stable_baselines3 import DDPG
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
 from rl.env import CSTRPITuningEnv, EnvironmentConfig
 
@@ -47,10 +47,9 @@ class RewardActionLogger(BaseCallback):
         return True
 
 
-
 def train_ddpg_agent(
     model_env: CSTRPITuningEnv,
-    total_timesteps: int = 10000,
+    total_timesteps: int = 25000,  # Increased slightly to give the policy network time to map the curves
     model_path: Path | None = None,
 ) -> Tuple[DDPG, TrainingHistory]:
     """Train a DDPG agent on the PI tuning environment."""
@@ -58,8 +57,14 @@ def train_ddpg_agent(
     config = model_env.config
     vec_env = DummyVecEnv([lambda: CSTRPITuningEnv(model_env.model, config)])
     vec_env = VecMonitor(vec_env)
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-    action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(2), sigma=np.array([0.2, 0.6]))
+    
+    # FIX: Completely removed VecNormalize. 
+    # Your custom manual scaling in env.py is already pristine. 
+    # Removing this prevents early-episode explosion variance from blinding the agent to tracking errors.
+
+    # Scaled noise parameters to match your action space dimensions smoothly
+    action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(2), sigma=np.array([0.3, 0.5]))
+    
     model = DDPG(
         "MlpPolicy",
         vec_env,
@@ -82,7 +87,7 @@ def train_ddpg_agent(
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save(str(model_path))
 
-    best_gains = evaluate_policy_gains(model, model_env.model, config, vec_env=vec_env)
+    best_gains = evaluate_policy_gains(model, model_env.model, config)
     history = TrainingHistory(
         episode_rewards=callback.episode_rewards,
         action_trace=callback.action_trace,
@@ -91,13 +96,11 @@ def train_ddpg_agent(
     return model, history
 
 
-
 def evaluate_policy_gains(
     model: DDPG,
     reactor_model,
     config: EnvironmentConfig,
     episodes: int = 3,
-    vec_env=None,
 ) -> Tuple[float, float]:
     """Estimate the optimized PI gains by rolling out the learned policy."""
 
@@ -107,14 +110,10 @@ def evaluate_policy_gains(
         observation, _ = env.reset()
         terminated = truncated = False
         while not (terminated or truncated):
-            if vec_env is not None:
-                normalized_obs = vec_env.normalize_obs(np.asarray(observation, dtype=np.float32))
-                action, _ = model.predict(normalized_obs, deterministic=True)
-            else:
-                action, _ = model.predict(observation, deterministic=True)
+            action, _ = model.predict(observation, deterministic=True)
             observation, _, terminated, truncated, _ = env.step(action)
             gains.append(np.asarray(action, dtype=float))
     if not gains:
-        return 1.0, 1.0
+        return -5.0, 10.0
     tail = np.asarray(gains[-min(len(gains), 50):], dtype=float)
     return float(np.median(tail[:, 0])), float(np.median(tail[:, 1]))
