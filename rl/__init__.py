@@ -1,10 +1,15 @@
+"""Reinforcement learning module for PI controller tuning."""
+
 from .env import CSTRPITuningEnv, EnvironmentConfig
-from .train import TrainingHistory, evaluate_policy_gains, train_ddpg_agent
+from .q_learning import train_q_learning_agent, TabularQLearningAgent, QLearningHistory
+from .train import train_ddpg_agent, train_sac_agent
 
 __all__ = [
-    'CSTRPITuningEnv',
-    'EnvironmentConfig',
-    'TrainingHistory',
-    'evaluate_policy_gains',
-    'train_ddpg_agent',
+    "CSTRPITuningEnv",
+    "EnvironmentConfig",
+    "train_q_learning_agent",
+    "TabularQLearningAgent",
+    "QLearningHistory",
+    "train_ddpg_agent",
+    "train_sac_agent",
 ]

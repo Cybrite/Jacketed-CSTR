@@ -1,10 +1,7 @@
 """Simulation and closed-loop analysis routines for the CSTR project."""
-
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
-
 import control
 import numpy as np
 
@@ -12,359 +9,131 @@ from controllers.pi import PIController, PIGains
 from models.cstr import CSTRModel
 from utils.metrics import ResponseMetrics, step_response_metrics
 
-
 @dataclass
 class LinearAnalysisResult:
-    """Container for linearized model data and response arrays."""
+    A: np.ndarray; B: np.ndarray; C: np.ndarray; D: np.ndarray
+    transfer_function: object; poles: np.ndarray; zeros: np.ndarray
+    step_time: np.ndarray; step_response: np.ndarray
 
-    A: np.ndarray
-    B: np.ndarray
-    C: np.ndarray
-    D: np.ndarray
-    transfer_function: object
-    poles: np.ndarray
-    zeros: np.ndarray
-    step_time: np.ndarray
-    step_response: np.ndarray
-
-
-def simulate_open_loop_disturbance(
-    model: CSTRModel,
-    steady_state: np.ndarray,
-    time_final: float = 60.0,
-    dt: float = 0.1,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate the nonlinear reactor with feed and coolant disturbances."""
-
+def simulate_open_loop_disturbance(model: CSTRModel, steady_state: np.ndarray, time_final: float = 60.0, dt: float = 0.1):
     time_eval = np.arange(0.0, time_final + dt, dt)
-
-    def coolant_flow(t: float) -> float:
-        if t < 18.0:
-            return model.params.Fc
-        if t < 38.0:
-            return 0.90 * model.params.Fc
-        return 1.08 * model.params.Fc
-
-    def feed_concentration(t: float) -> float:
-        if t < 28.0:
-            return model.params.Ca0
-        return model.params.Ca0 * 1.12
-
+    def coolant_flow(t): return model.params.Fc * (0.90 if 18.0 <= t < 38.0 else (1.08 if t >= 38.0 else 1.0))
+    def feed_concentration(t): return model.params.Ca0 * (1.12 if t >= 28.0 else 1.0)
     result = model.simulate_open_loop(
-        time_span=(0.0, time_final),
-        initial_state=steady_state,
-        Fc_profile=coolant_flow,
-        F_profile=lambda t: model.params.F,
-        Tcin_profile=lambda t: model.params.Tcin0,
-        Ca0_profile=feed_concentration,
-        T0_profile=lambda t: model.params.T0,
-        time_eval=time_eval,
+        time_span=(0.0, time_final), initial_state=steady_state, Fc_profile=coolant_flow, 
+        F_profile=lambda t: model.params.F, Tcin_profile=lambda t: model.params.Tcin0, 
+        Ca0_profile=feed_concentration, T0_profile=lambda t: model.params.T0, time_eval=time_eval,
     )
     Fc = np.array([coolant_flow(t) for t in result.t], dtype=float)
     Ca0 = np.array([feed_concentration(t) for t in result.t], dtype=float)
-    Tcin = np.full_like(Ca0, model.params.Tcin0)
-    return result.t, result.y[0], result.y[1], result.y[2], Fc, np.vstack([Ca0, np.full_like(Ca0, model.params.T0), Tcin])
+    return result.t, result.y[0], result.y[1], result.y[2], Fc, np.vstack([Ca0, np.full_like(Ca0, model.params.T0), np.full_like(Ca0, model.params.Tcin0)])
 
-
-def linear_analysis(
-    model: CSTRModel,
-    operating_point: np.ndarray,
-    F: float,
-    Fc: float,
-    Tcin: float,
-    time_final: float = 50.0,
-) -> LinearAnalysisResult:
-    """Linearize the CSTR and generate the corresponding step response."""
-
+def linear_analysis(model, operating_point, F, Fc, Tcin, time_final=50.0):
     time = np.linspace(0.0, time_final, 500)
     A, B, C, D = model.linearize(operating_point, F, Fc, Tcin=Tcin)
-    state_space = control.ss(A, B, C, D)
-    transfer_function = control.ss2tf(state_space)
-    poles = control.poles(transfer_function)
-    zeros = control.zeros(transfer_function)
-    step_time, step_response = control.step_response(transfer_function, T=time)
+    state_space = control.ss(A, B, C, D); tf = control.ss2tf(state_space)
+    step_time, step_response = control.step_response(tf, T=time)
+    return LinearAnalysisResult(A, B, C, D, tf, np.asarray(control.poles(tf), dtype=complex), np.asarray(control.zeros(tf), dtype=complex), step_time, step_response)
 
-    return LinearAnalysisResult(
-        A=A,
-        B=B,
-        C=C,
-        D=D,
-        transfer_function=transfer_function,
-        poles=np.asarray(poles, dtype=complex),
-        zeros=np.asarray(zeros, dtype=complex),
-        step_time=np.asarray(step_time, dtype=float),
-        step_response=np.asarray(step_response, dtype=float),
-    )
-
-
-def build_pi_transfer_function(gains: PIGains):
-    """Return the continuous-time PI controller transfer function."""
-
-    s = control.TransferFunction.s
-    return gains.Kc * (1.0 + 1.0 / (gains.tauI * s))
-
+def build_pi_transfer_function(gains: PIGains): return gains.Kc * (1.0 + 1.0 / (gains.tauI * control.TransferFunction.s))
 
 def closed_loop_linear_response(plant_tf, gains: PIGains, time: np.ndarray):
-    """Construct GcGp/(1+GcGp) and simulate the step response."""
+    closed_loop_tf = control.feedback(build_pi_transfer_function(gains) * plant_tf, 1)
+    t, y = control.step_response(closed_loop_tf, T=time)
+    return closed_loop_tf, t, y
 
-    controller_tf = build_pi_transfer_function(gains)
-    closed_loop_tf = control.feedback(controller_tf * plant_tf, 1)
-    step_time, step_response = control.step_response(closed_loop_tf, T=time)
-    return closed_loop_tf, np.asarray(step_time, dtype=float), np.asarray(step_response, dtype=float)
+def simulate_closed_loop_step(model, gains, setpoint, operating_point, time_final=80.0, dt=0.1):
+    controller = PIController(gains.Kc, gains.tauI, bias=model.params.Fc, u_min=model.params.Fc_min, u_max=model.params.Fc_max)
+    time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
+    temp, flow = np.empty_like(time), np.empty_like(time)
+    for i in range(len(time)):
+        temp[i] = state[1]; flow[i] = controller.compute(setpoint, state[1], dt)
+        state = _rk4_step(model, state, flow[i], dt)
+        if state[1] > 600.0 or state[1] < 150.0:
+            temp[i:], flow[i:] = model.params.T_safe, model.params.Fc_max; break
+    return time, temp, flow
 
+def simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating_point, disturbance, time_final=40.0, dt=0.1, disturbance_time=20.0):
+    controller = PIController(gains.Kc, gains.tauI, bias=model.params.Fc, u_min=model.params.Fc_min, u_max=model.params.Fc_max)
+    time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
+    temp, flow, trace = np.empty_like(time), np.empty_like(time), np.empty_like(time)
+    for i, current_time in enumerate(time):
+        Ca0, T0, Tcin = model.params.Ca0, model.params.T0, model.params.Tcin0
+        if disturbance == "ca0": Ca0 = trace[i] = model.params.Ca0 * (1.12 if current_time >= disturbance_time else 1.0)
+        elif disturbance == "t0": T0 = trace[i] = model.params.T0 + (8.0 if current_time >= disturbance_time else 0.0)
+        elif disturbance == "tcin": Tcin = trace[i] = model.params.Tcin0 + (5.0 if current_time >= disturbance_time else 0.0)
+        temp[i] = state[1]; flow[i] = controller.compute(setpoint, state[1], dt)
+        state = _rk4_step(model, state, flow[i], dt, Ca0, T0, Tcin)
+        if state[1] > 600.0 or state[1] < 150.0:
+            temp[i:], flow[i:], trace[i:] = model.params.T_safe, model.params.Fc_max, trace[i]; break
+    return time, temp, flow, trace
 
-def simulate_closed_loop_step(
-    model: CSTRModel,
-    gains: PIGains,
-    setpoint: float,
-    operating_point: np.ndarray,
-    time_final: float = 80.0,
-    dt: float = 0.1,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate a nonlinear closed-loop PI controlled reactor."""
-
-    controller = PIController(
-        gains.Kc,
-        gains.tauI,
-        bias=model.params.Fc,
-        u_min=model.params.Fc_min,
-        u_max=model.params.Fc_max,
-    )
-    controller.reset()
-    time = np.arange(0.0, time_final + dt, dt)
-    state = np.asarray(operating_point, dtype=float).copy()
-    temperatures = np.empty_like(time)
-    flows = np.empty_like(time)
-
-    for index, _ in enumerate(time):
-        temperatures[index] = state[1]
-        flows[index] = controller.compute(setpoint=setpoint, measurement=state[1], dt=dt)
-        state = _rk4_step(model, state, flows[index], dt)
-        if not np.all(np.isfinite(state)):
-            temperatures[index:] = model.params.T_safe
-            flows[index:] = model.params.Fc_max
-            break
-    return time, temperatures, flows
-
-
-def simulate_closed_loop_disturbance_rejection(
-    model: CSTRModel,
-    gains: PIGains,
-    setpoint: float,
-    operating_point: np.ndarray,
-    disturbance: str,
-    time_final: float = 40.0,
-    dt: float = 0.1,
-    disturbance_time: float = 20.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate a PI closed-loop response to a load disturbance."""
-
-    controller = PIController(
-        gains.Kc,
-        gains.tauI,
-        bias=model.params.Fc,
-        u_min=model.params.Fc_min,
-        u_max=model.params.Fc_max,
-    )
-    controller.reset()
-    time = np.arange(0.0, time_final + dt, dt)
-    state = np.asarray(operating_point, dtype=float).copy()
-    temperatures = np.empty_like(time)
-    flows = np.empty_like(time)
-    disturbance_trace = np.empty_like(time)
-
-    for index, current_time in enumerate(time):
-        if disturbance == "ca0":
-            load = model.params.Ca0 if current_time < disturbance_time else 1.12 * model.params.Ca0
-            disturbance_trace[index] = load
-            Ca0 = load
-            T0 = model.params.T0
-            Tcin = model.params.Tcin0
-        elif disturbance == "t0":
-            load = model.params.T0 if current_time < disturbance_time else model.params.T0 + 8.0
-            disturbance_trace[index] = load
-            Ca0 = model.params.Ca0
-            T0 = load
-            Tcin = model.params.Tcin0
-        elif disturbance == "tcin":
-            load = model.params.Tcin0 if current_time < disturbance_time else model.params.Tcin0 + 5.0
-            disturbance_trace[index] = load
-            Ca0 = model.params.Ca0
-            T0 = model.params.T0
-            Tcin = load
-        else:
-            raise ValueError(f"Unsupported disturbance type: {disturbance}")
-
-        temperatures[index] = state[1]
-        flows[index] = controller.compute(setpoint=setpoint, measurement=state[1], dt=dt)
-        state = _rk4_step(model, state, flows[index], dt, Ca0=Ca0, T0=T0, Tcin=Tcin)
-        if not np.all(np.isfinite(state)):
-            temperatures[index:] = model.params.T_safe
-            flows[index:] = model.params.Fc_max
-            disturbance_trace[index:] = load
-            break
-
-    return time, temperatures, flows, disturbance_trace
-
-
-def simulate_closed_loop_policy(
-    model: CSTRModel,
-    policy_fn: Callable[[np.ndarray], np.ndarray],
-    setpoint: float,
-    operating_point: np.ndarray,
-    time_final: float = 80.0,
-    dt: float = 0.1,
-    disturbance: Optional[str] = None,
-    disturbance_time: float = 20.0,
-    observation_horizon: Optional[float] = None,
-    gain_bounds: Tuple[Tuple[float, float], Tuple[float, float]] = ((-25.0, -0.1), (0.2, 50.0)),
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate a closed loop where the PI gains come from an RL policy."""
-
-    time = np.arange(0.0, time_final + dt, dt)
-    state = np.asarray(operating_point, dtype=float).copy()
-    temperatures = np.empty_like(time)
-    flows = np.empty_like(time)
-    gains_trace = np.empty((len(time), 2), dtype=float)
-    disturbance_trace = np.empty_like(time)
+def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))):
+    time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
+    temp, flow, trace, gains_trace = np.empty_like(time), np.empty_like(time), np.empty_like(time), np.empty((len(time), 2))
     
-    previous_error = setpoint - state[1]
-    integral_error = 0.0
-    error_scale = 10.0
-    integral_scale = error_scale * max(float(observation_horizon if observation_horizon is not None else time_final), 1.0)
-    derivative_scale = 50.0
+    prev_err, int_err = setpoint - state[1], 0.0
 
-    for index, current_time in enumerate(time):
-        if disturbance == "ca0":
-            load = model.params.Ca0 if current_time < disturbance_time else 1.12 * model.params.Ca0
-            disturbance_trace[index] = load
-            Ca0 = load
-            T0 = model.params.T0
-            Tcin = model.params.Tcin0
-        elif disturbance == "t0":
-            load = model.params.T0 if current_time < disturbance_time else model.params.T0 + 8.0
-            disturbance_trace[index] = load
-            Ca0 = model.params.Ca0
-            T0 = load
-            Tcin = model.params.Tcin0
-        elif disturbance == "tcin":
-            load = model.params.Tcin0 if current_time < disturbance_time else model.params.Tcin0 + 5.0
-            disturbance_trace[index] = load
-            Ca0 = model.params.Ca0
-            T0 = model.params.T0
-            Tcin = load
-        else:
-            load = np.nan
-            disturbance_trace[index] = load
-            Ca0 = model.params.Ca0
-            T0 = model.params.T0
-            Tcin = model.params.Tcin0
-
-        temperatures[index] = state[1]
-        error = setpoint - state[1]
-        derivative_error = (error - previous_error) / dt
+    for i, current_time in enumerate(time):
+        Ca0, T0, Tcin = model.params.Ca0, model.params.T0, model.params.Tcin0
+        if disturbance == "ca0": Ca0 = trace[i] = model.params.Ca0 * (1.12 if current_time >= disturbance_time else 1.0)
+        elif disturbance == "t0": T0 = trace[i] = model.params.T0 + (8.0 if current_time >= disturbance_time else 0.0)
+        else: trace[i] = np.nan
         
-        observation = np.asarray(
-            [
-                error / error_scale,
-                integral_error / integral_scale,
-                derivative_error / derivative_scale,
-            ],
-            dtype=float,
-        )
-        observation = np.clip(observation, -10.0, 10.0).astype(np.float32)
-
-        gains = np.asarray(policy_fn(observation), dtype=float).reshape(-1)
-        gains = np.array(
-            [
-                float(np.clip(gains[0], gain_bounds[0][0], gain_bounds[0][1])),
-                float(np.clip(gains[1], gain_bounds[1][0], gain_bounds[1][1])),
-            ],
-            dtype=float,
-        )
-        gains_trace[index] = gains
-
-        integral_error += error * dt
-        flow = model.params.Fc + gains[0] * error + (gains[0] / max(gains[1], 1e-9)) * integral_error
-        flow = float(np.clip(flow, model.params.Fc_min, model.params.Fc_max))
-        flows[index] = flow
-
-        state = _rk4_step(model, state, flow, dt, Ca0=Ca0, T0=T0, Tcin=Tcin)
-        previous_error = error
+        temp[i], error = state[1], setpoint - state[1]
         
-        # FIX: Clamp to safety temperature on failure so metrics log high penalties instead of NaNs
-        if not np.all(np.isfinite(state)) or state[1] > 1000.0:
-            temperatures[index:] = model.params.T_safe
-            flows[index:] = model.params.Fc_max
-            gains_trace[index:] = gains
-            if not np.isnan(load):
-                disturbance_trace[index:] = load
+        # Safe observation bounds
+        obs = np.clip([error / 10.0, int_err / (10.0 * max(observation_horizon, 1.0)), (error - prev_err) / (dt * 50.0)], -10.0, 10.0).astype(np.float32)
+        
+        gains = np.asarray(policy_fn(obs)).reshape(-1)
+        gains = np.array([np.clip(gains[0], gain_bounds[0][0], gain_bounds[0][1]), np.clip(gains[1], gain_bounds[1][0], gain_bounds[1][1])])
+        gains_trace[i] = gains
+        
+        # FIX: The Explicit PI Actuator with mathematical anti-windup clamping
+        int_err += error * dt
+        flow_raw = model.params.Fc + gains[0] * error + (gains[0] / max(gains[1], 1e-9)) * int_err
+        flow[i] = float(np.clip(flow_raw, model.params.Fc_min, model.params.Fc_max))
+        
+        # Revert integral accumulation if valve saturates
+        if flow_raw > model.params.Fc_max or flow_raw < model.params.Fc_min:
+            int_err -= error * dt 
+            
+        state = _rk4_step(model, state, flow[i], dt, Ca0, T0, Tcin)
+        prev_err = error
+        
+        if state[1] > 600.0 or state[1] < 150.0:
+            temp[i:], flow[i:], gains_trace[i:] = model.params.T_safe, model.params.Fc_max, gains
+            if not np.isnan(trace[i]): trace[i:] = trace[i]
             break
+            
+    return time, np.clip(temp, 100.0, 600.0), flow, gains_trace, trace
 
-    return time, temperatures, flows, gains_trace, disturbance_trace
+def closed_loop_metrics(time, response, setpoint): return step_response_metrics(time, response, setpoint)
 
+def classical_closed_loop_analysis(model, operating_point, tuning_map, setpoint):
+    return {name: {"time": t, "temperature": y, "flow": u, "metrics": closed_loop_metrics(t, y, setpoint), "gains": g} for name, g in tuning_map.items() for t, y, u in [simulate_closed_loop_step(model, g, setpoint, operating_point)]}
 
-def closed_loop_metrics(time: np.ndarray, response: np.ndarray, setpoint: float) -> ResponseMetrics:
-    """Compute standard performance indices and transient-response metrics."""
+def dominant_second_order_characteristics(poles):
+    c_poles = [p for p in poles if np.imag(p) != 0]
+    if c_poles:
+        p = sorted(c_poles, key=lambda v: abs(np.real(v)))[0]
+        return float(-np.real(p) / max(float(np.abs(p)), 1e-9)), float(np.abs(p))
+    p = poles[np.argmax(np.real(poles))]
+    return 1.0, float(abs(np.real(p)))
 
-    return step_response_metrics(time, response, setpoint)
+def _rk4_step(model, state, Fc, dt, Ca0=None, T0=None, Tcin=None):
+    def rhs(x):
+        xs = np.clip(np.nan_to_num(x), -1e4, 1e4)
+        dx = model.dynamics(0.0, xs, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
+        return np.clip(np.nan_to_num(dx), -1e4, 1e4)
 
-
-def classical_closed_loop_analysis(
-    model: CSTRModel,
-    operating_point: np.ndarray,
-    tuning_map: Dict[str, PIGains],
-    setpoint: float,
-) -> Dict[str, Dict[str, object]]:
-    """Simulate all classical PI tuning rules and return trajectories and metrics."""
-
-    results: Dict[str, Dict[str, object]] = {}
-    for name, gains in tuning_map.items():
-        time, temperature, flow = simulate_closed_loop_step(
-            model=model,
-            gains=gains,
-            setpoint=setpoint,
-            operating_point=operating_point,
-        )
-        metrics = closed_loop_metrics(time, temperature, setpoint)
-        results[name] = {
-            "time": time,
-            "temperature": temperature,
-            "flow": flow,
-            "metrics": metrics,
-            "gains": gains,
-        }
-    return results
-
-
-def dominant_second_order_characteristics(poles: np.ndarray) -> Tuple[float, float]:
-    """Estimate damping ratio and natural frequency from a pole pair."""
-
-    complex_poles = [pole for pole in poles if np.imag(pole) != 0]
-    if complex_poles:
-        pole = sorted(complex_poles, key=lambda value: abs(np.real(value)))[0]
-        wn = float(np.abs(pole))
-        zeta = float(-np.real(pole) / max(wn, 1e-9))
-        return zeta, wn
-    pole = poles[np.argmax(np.real(poles))]
-    wn = float(abs(np.real(pole)))
-    zeta = 1.0
-    return zeta, wn
-
-
-def _rk4_step(
-    model: CSTRModel,
-    state: np.ndarray,
-    Fc: float,
-    dt: float,
-    Ca0: Optional[float] = None,
-    T0: Optional[float] = None,
-    Tcin: Optional[float] = None,
-) -> np.ndarray:
-    """Fixed-step RK4 integrator for the nonlinear CSTR."""
-
-    k1 = model.dynamics(0.0, state, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
-    k2 = model.dynamics(0.0, state + 0.5 * dt * k1, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
-    k3 = model.dynamics(0.0, state + 0.5 * dt * k2, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
-    k4 = model.dynamics(0.0, state + dt * k3, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
-    return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    k1 = rhs(state)
+    k2 = rhs(state + 0.5 * dt * k1)
+    k3 = rhs(state + 0.5 * dt * k2)
+    k4 = rhs(state + dt * k3)
+    next_state = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    next_state = np.nan_to_num(next_state, nan=model.params.T_safe)
+    next_state[0] = np.clip(next_state[0], 0.0, 10.0)    
+    next_state[1] = np.clip(next_state[1], 150.0, 600.0) 
+    next_state[2] = np.clip(next_state[2], 150.0, 600.0) 
+    return next_state
