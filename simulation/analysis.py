@@ -68,7 +68,7 @@ def simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating
             temp[i:], flow[i:], trace[i:] = model.params.T_safe, model.params.Fc_max, trace[i]; break
     return time, temp, flow, trace
 
-def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-25.0, -0.1), (0.2, 20.0))):
+def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))):
     time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
     temp, flow, trace, gains_trace = np.empty_like(time), np.empty_like(time), np.empty_like(time), np.empty((len(time), 2))
     

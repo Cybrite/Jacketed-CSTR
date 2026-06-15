@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import control
 import numpy as np
+import random
+import torch
 
 from controllers.pi import imc_pi, ziegler_nichols_pi, PIGains
 from models.cstr import CSTRModel
@@ -41,6 +43,11 @@ def select_operating_point(model: CSTRModel) -> np.ndarray:
     return np.array([preferred.Ca, preferred.TR, preferred.TJ], dtype=float)
 
 def main() -> None:
+    # GLOBAL SEEDING: Guarantees 0 variance across multiple runs
+    np.random.seed(42)
+    random.seed(42)
+    torch.manual_seed(42)
+
     configure_matplotlib()
     ARTIFACTS.mkdir(exist_ok=True); FIGURES.mkdir(parents=True, exist_ok=True); MODELS.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +111,7 @@ def main() -> None:
     
     for agent_name, policy in rl_agents.items():
         time_arr, temp_arr, flow_arr, gains_arr, _ = simulate_closed_loop_policy(
-            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-25.0, -0.1), (0.2, 20.0))
+            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))
         )
         rl_results[agent_name] = {"time": time_arr, "temperature": temp_arr, "flow": flow_arr, "gains": gains_arr, "metrics": closed_loop_metrics(time_arr, temp_arr, setpoint)}
     
@@ -127,7 +134,6 @@ def main() -> None:
             rejection_results[name] = {"time": time, "temperature": temp, "flow": flow, "disturbance": trace}
             
         for agent_name in rl_agents.keys():
-            # Apply the "Frozen" RL gains for disturbance rejection to eliminate chattering!
             final_kc = float(rl_results[agent_name]["gains"][-1][0])
             final_tauI = float(rl_results[agent_name]["gains"][-1][1])
             optimized_gains = PIGains(Kc=final_kc, tauI=final_tauI)

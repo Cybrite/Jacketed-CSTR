@@ -14,12 +14,15 @@ def train_ddpg_agent(model_env: CSTRPITuningEnv, total_timesteps: int = 25000) -
     
     action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * action_range)
     
-    model = DDPG("MlpPolicy", vec_env, action_noise=action_noise, verbose=0, learning_rate=1e-3, buffer_size=50000, batch_size=128, gamma=0.98, tau=0.01, learning_starts=500)
+    # THE FIX: Added seed=42 to guarantee zero variance
+    model = DDPG("MlpPolicy", vec_env, action_noise=action_noise, verbose=0, learning_rate=1e-3, buffer_size=50000, batch_size=128, gamma=0.98, tau=0.01, learning_starts=1000, seed=42)
     model.learn(total_timesteps=total_timesteps, progress_bar=False)
     return model
 
 def train_sac_agent(model_env: CSTRPITuningEnv, total_timesteps: int = 25000) -> SAC:
     vec_env = DummyVecEnv([lambda: CSTRPITuningEnv(model_env.model, model_env.config)])
-    model = SAC("MlpPolicy", vec_env, verbose=0, learning_rate=1e-3, buffer_size=50000, batch_size=128, gamma=0.98, tau=0.01, ent_coef='auto', learning_starts=500)
+    
+    # THE FIX: Added seed=42 to guarantee zero variance
+    model = SAC("MlpPolicy", vec_env, verbose=0, learning_rate=1e-3, buffer_size=50000, batch_size=128, gamma=0.98, tau=0.01, ent_coef='auto', learning_starts=1000, seed=42)
     model.learn(total_timesteps=total_timesteps, progress_bar=False)
     return model

@@ -14,9 +14,8 @@ class EnvironmentConfig:
     episode_steps: int = 200
     safety_temperature: float = 500.0
     setpoint_temperature: float = 355.0
-    # Wide, unrestricted physical bounds allowing full classical PI emulation
-    Kc_bounds: Tuple[float, float] = (-25.0, -0.1)
-    tauI_bounds: Tuple[float, float] = (0.2, 20.0)
+    Kc_bounds: Tuple[float, float] = (-20.0, -0.5)
+    tauI_bounds: Tuple[float, float] = (1.0, 20.0)
 
 class CSTRPITuningEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -43,6 +42,7 @@ class CSTRPITuningEnv(gym.Env):
         self._previous_error = 0.0
         self._integral_action = 0.0
         self._step_count = 0
+        self._is_in_purgatory = False
         self._rng = np.random.default_rng()
         
         candidates = self.model.find_steady_state_candidates(F=self.model.params.F, Fc=self.model.params.Fc, Tcin=self.model.params.Tcin0)
@@ -66,20 +66,27 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count = 0
         self._previous_error = self.config.setpoint_temperature - self._state[1]
         self._integral_action = 0.0
+        self._is_in_purgatory = False
         return self._get_observation(), {}
 
     def step(self, action):
+        self._step_count += 1
+        truncated = self._step_count >= (self.config.episode_steps // 10)
+        
+        # Purgatory Loop: If the agent breaks the reactor, it is trapped receiving constant negative rewards.
+        # This prevents "Lazy reward hacking" by forcing smooth negative gradients.
+        if self._is_in_purgatory:
+            return self._get_observation(), -5.0, False, truncated, {}
+
         gains = np.clip(np.asarray(action, dtype=float), self.action_space.low, self.action_space.high)
         Kc, tauI = float(gains[0]), float(gains[1])
         
         total_reward = 0.0
-        instability = False
         hold_steps = 10  
         
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
             
-            # Bumpless transfer integration calculates true control effort
             self._integral_action += (Kc / max(tauI, 1e-9)) * error * self.config.dt
             flow_raw = self.model.params.Fc + Kc * error + self._integral_action
             flow = float(np.clip(flow_raw, self.model.params.Fc_min, self.model.params.Fc_max))
@@ -90,25 +97,18 @@ class CSTRPITuningEnv(gym.Env):
             next_state = self._rk4_step(self._state, flow)
             
             if next_state[1] > 480.0 or next_state[1] < 200.0 or not np.all(np.isfinite(next_state)):
-                instability = True
+                self._is_in_purgatory = True
+                self._state[1] = self.config.safety_temperature
                 break
 
-            # Linear absolute tracking penalty completely eliminates the "Lazy Hack"
-            error_norm = abs(error) / 10.0
-            total_reward -= error_norm
-
+            total_reward -= abs(error) / 5.0
             self._previous_error = error
             self._state = next_state
 
-        self._step_count += 1
-        terminated = bool(instability)
-        truncated = self._step_count >= (self.config.episode_steps // hold_steps)
+        if self._is_in_purgatory:
+            total_reward -= 100.0  
 
-        # Proportional crash penalty perfectly balanced against the tracking penalty
-        if terminated: 
-            total_reward -= 250.0 
-
-        return self._get_observation(), float(total_reward), terminated, truncated, {}
+        return self._get_observation(), float(total_reward), False, truncated, {}
 
     def _get_observation(self) -> np.ndarray:
         error = self.config.setpoint_temperature - self._state[1]

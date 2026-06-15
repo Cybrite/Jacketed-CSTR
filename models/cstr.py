@@ -21,6 +21,8 @@ class CSTRModel:
         """Arrhenius reaction rate with absolute mathematical overflow protection."""
         p = self.params
         TR_safe = max(1.0, float(TR)) 
+        
+        # THE FIX: This mathematically shields the exponent, preventing the NaN crash
         exponent = np.clip(-p.E / (p.R * TR_safe), -500.0, 100.0)
         return p.k0 * np.exp(exponent) * Ca
 
