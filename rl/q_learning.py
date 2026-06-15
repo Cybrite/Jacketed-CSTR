@@ -1,4 +1,4 @@
-"""Tabular Q-learning implementation with Midpoint Evaluation Fallback."""
+"""Tabular Q-learning implementation with Pessimistic Fallback."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -22,10 +22,10 @@ class TabularQLearningAgent:
             np.array([-1.2, -0.2, 0.2, 1.2])
         ]
         
-        # Zero-initialized matrix pairs perfectly with the positive Gaussian reward structure
-        self.q_table = np.zeros(
+        # Pessimistic initialization forces the agent to rely on what it learned
+        self.q_table = np.full(
             (len(self.state_bins[0])+1, len(self.state_bins[1])+1, len(self.state_bins[2])+1, len(kc_actions), len(tau_actions)),
-            dtype=float
+            -1000.0, dtype=float
         )
         self.alpha = 0.15
         self.gamma = 0.98  
@@ -46,9 +46,8 @@ class TabularQLearningAgent:
         if explore and np.random.rand() < self.epsilon:
             return np.random.randint(0, len(self.kc_actions)), np.random.randint(0, len(self.tau_actions))
         
-        # FIX: The Midpoint Fallback. If the agent lands in a completely unvisited state during evaluation,
-        # return a safe, central index parameter instead of blindly defaulting to array index 0.
-        if not explore and np.all(q_slice == 0.0):
+        # FIX: Complete blind-spot fallback. If the state is entirely unvisited, use safe central bounds.
+        if not explore and np.max(q_slice) <= -999.0:
             return int(len(self.kc_actions) // 2), int(len(self.tau_actions) // 2)
         
         max_idx = np.unravel_index(np.argmax(q_slice), q_slice.shape)
@@ -64,8 +63,8 @@ class TabularQLearningAgent:
 
 def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 1500) -> Tuple[TabularQLearningAgent, QLearningHistory]:
     np.random.seed(42) 
-    kc_actions = np.linspace(-20.0, -0.5, 8)
-    tau_actions = np.linspace(1.0, 20.0, 8)
+    kc_actions = np.linspace(-8.0, -0.5, 6)
+    tau_actions = np.linspace(0.5, 8.0, 6)
     agent = TabularQLearningAgent(kc_actions, tau_actions)
     episode_rewards = []
 

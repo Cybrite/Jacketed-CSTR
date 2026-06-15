@@ -6,7 +6,6 @@ from typing import Dict, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-
 from models.cstr import CSTRModel
 
 @dataclass
@@ -15,8 +14,9 @@ class EnvironmentConfig:
     episode_steps: int = 200
     safety_temperature: float = 500.0
     setpoint_temperature: float = 355.0
-    Kc_bounds: Tuple[float, float] = (-20.0, -0.5)
-    tauI_bounds: Tuple[float, float] = (1.0, 20.0)
+    # Tight bounds focusing strictly on the usable control region
+    Kc_bounds: Tuple[float, float] = (-8.0, -0.5)
+    tauI_bounds: Tuple[float, float] = (0.5, 8.0)
 
 class CSTRPITuningEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -41,7 +41,7 @@ class CSTRPITuningEnv(gym.Env):
         )
         self._state = np.zeros(3, dtype=float)
         self._previous_error = 0.0
-        self._integral_error = 0.0
+        self._integral_action = 0.0
         self._step_count = 0
         self._rng = np.random.default_rng()
         
@@ -65,7 +65,7 @@ class CSTRPITuningEnv(gym.Env):
         self._state[0] = max(1e-6, self._state[0])
         self._step_count = 0
         self._previous_error = self.config.setpoint_temperature - self._state[1]
-        self._integral_error = 0.0
+        self._integral_action = 0.0
         return self._get_observation(), {}
 
     def step(self, action):
@@ -78,43 +78,44 @@ class CSTRPITuningEnv(gym.Env):
         
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
-            self._integral_error += error * self.config.dt
-            derivative_error = (error - self._previous_error) / self.config.dt
-
-            # Explicit Math matching analysis.py
-            flow_raw = self.model.params.Fc + Kc * error + (Kc / max(tauI, 1e-9)) * self._integral_error
+            
+            # Bumpless transfer integration
+            self._integral_action += (Kc / max(tauI, 1e-9)) * error * self.config.dt
+            flow_raw = self.model.params.Fc + Kc * error + self._integral_action
             flow = float(np.clip(flow_raw, self.model.params.Fc_min, self.model.params.Fc_max))
             
             # Anti-windup
             if flow_raw > self.model.params.Fc_max or flow_raw < self.model.params.Fc_min:
-                self._integral_error -= error * self.config.dt
+                self._integral_action -= (Kc / max(tauI, 1e-9)) * error * self.config.dt
 
             next_state = self._rk4_step(self._state, flow)
             
-            if next_state[1] > 550.0 or next_state[1] < 150.0 or not np.all(np.isfinite(next_state)):
+            # Tighter safety bounds to catch divergence early
+            if next_state[1] > 500.0 or next_state[1] < 200.0 or not np.all(np.isfinite(next_state)):
                 instability = True
                 break
 
-            error_norm = np.clip(abs(self.config.setpoint_temperature - next_state[1]) / 10.0, 0.0, 1.0)
-            total_reward += (1.0 - error_norm)
+            # STRICT L2 PENALTY: DDPG must target the setpoint to stop the bleeding of points.
+            error_sq = np.clip((error / 5.0)**2, 0.0, 1.0)
+            total_reward -= error_sq
 
             self._previous_error = error
             self._state = next_state
 
         self._step_count += 1
-        terminated = bool(instability or self._state[1] >= self.config.safety_temperature or self._state[1] <= self.model.params.T_min)
+        terminated = bool(instability)
         truncated = self._step_count >= (self.config.episode_steps // hold_steps)
 
+        # Crash penalty scaled specifically for deep networks [-400, 0] bounds
         if terminated: 
-            total_reward -= 50.0 
+            total_reward -= 400.0 
 
         return self._get_observation(), float(total_reward), terminated, truncated, {}
 
     def _get_observation(self) -> np.ndarray:
         error = self.config.setpoint_temperature - self._state[1]
         derivative_error = (error - self._previous_error) / self.config.dt
-        integral_scale = 10.0 * max(self.config.dt * self.config.episode_steps, 1.0)
-        obs = np.array([error / 10.0, self._integral_error / integral_scale, derivative_error / 50.0], dtype=np.float32)
+        obs = np.array([error / 10.0, self._integral_action / 50.0, derivative_error / 50.0], dtype=np.float32)
         return np.clip(obs, -10.0, 10.0)
 
     def _rk4_step(self, state: np.ndarray, flow: float) -> np.ndarray:

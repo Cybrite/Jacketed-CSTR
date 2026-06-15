@@ -68,11 +68,11 @@ def simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating
             temp[i:], flow[i:], trace[i:] = model.params.T_safe, model.params.Fc_max, trace[i]; break
     return time, temp, flow, trace
 
-def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))):
+def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0))):
     time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
     temp, flow, trace, gains_trace = np.empty_like(time), np.empty_like(time), np.empty_like(time), np.empty((len(time), 2))
     
-    prev_err, int_err = setpoint - state[1], 0.0
+    prev_err, int_action = setpoint - state[1], 0.0
 
     for i, current_time in enumerate(time):
         Ca0, T0, Tcin = model.params.Ca0, model.params.T0, model.params.Tcin0
@@ -81,22 +81,20 @@ def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, tim
         else: trace[i] = np.nan
         
         temp[i], error = state[1], setpoint - state[1]
-        
-        # Safe observation bounds
-        obs = np.clip([error / 10.0, int_err / (10.0 * max(observation_horizon, 1.0)), (error - prev_err) / (dt * 50.0)], -10.0, 10.0).astype(np.float32)
+        obs = np.clip([error / 10.0, int_action / 50.0, (error - prev_err) / (dt * 50.0)], -10.0, 10.0).astype(np.float32)
         
         gains = np.asarray(policy_fn(obs)).reshape(-1)
         gains = np.array([np.clip(gains[0], gain_bounds[0][0], gain_bounds[0][1]), np.clip(gains[1], gain_bounds[1][0], gain_bounds[1][1])])
         gains_trace[i] = gains
         
-        # FIX: The Explicit PI Actuator with mathematical anti-windup clamping
-        int_err += error * dt
-        flow_raw = model.params.Fc + gains[0] * error + (gains[0] / max(gains[1], 1e-9)) * int_err
+        # Bumpless Transfer
+        Kc, tauI = gains[0], max(gains[1], 1e-9)
+        int_action += (Kc / tauI) * error * dt
+        flow_raw = model.params.Fc + Kc * error + int_action
         flow[i] = float(np.clip(flow_raw, model.params.Fc_min, model.params.Fc_max))
         
-        # Revert integral accumulation if valve saturates
         if flow_raw > model.params.Fc_max or flow_raw < model.params.Fc_min:
-            int_err -= error * dt 
+            int_action -= (Kc / tauI) * error * dt 
             
         state = _rk4_step(model, state, flow[i], dt, Ca0, T0, Tcin)
         prev_err = error
@@ -105,7 +103,6 @@ def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, tim
             temp[i:], flow[i:], gains_trace[i:] = model.params.T_safe, model.params.Fc_max, gains
             if not np.isnan(trace[i]): trace[i:] = trace[i]
             break
-            
     return time, np.clip(temp, 100.0, 600.0), flow, gains_trace, trace
 
 def closed_loop_metrics(time, response, setpoint): return step_response_metrics(time, response, setpoint)
@@ -125,7 +122,7 @@ def _rk4_step(model, state, Fc, dt, Ca0=None, T0=None, Tcin=None):
     def rhs(x):
         xs = np.clip(np.nan_to_num(x), -1e4, 1e4)
         dx = model.dynamics(0.0, xs, Fc=Fc, F=model.params.F, Ca0=Ca0, T0=T0, Tcin=Tcin)
-        return np.clip(np.nan_to_num(dx), -1e4, 1e4)
+        return np.clip(np.nan_to_num(dx, nan=0.0, posinf=1e4, neginf=-1e4), -1e4, 1e4)
 
     k1 = rhs(state)
     k2 = rhs(state + 0.5 * dt * k1)

@@ -75,7 +75,7 @@ def main() -> None:
     rl_env = CSTRPITuningEnv(model, rl_config)
 
     print("\nTraining Tabular Q-Learning Agent. Please wait...")
-    q_agent, q_history = train_q_learning_agent(rl_env, episodes=2000)
+    q_agent, q_history = train_q_learning_agent(rl_env, episodes=1500)
     print("Training Continuous DDPG Agent. Please wait...")
     ddpg_agent = train_ddpg_agent(rl_env, total_timesteps=25000)
     print("Training Soft Actor-Critic (SAC) Agent. Please wait...")
@@ -104,7 +104,7 @@ def main() -> None:
     
     for agent_name, policy in rl_agents.items():
         time_arr, temp_arr, flow_arr, gains_arr, _ = simulate_closed_loop_policy(
-            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))
+            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0))
         )
         rl_results[agent_name] = {"time": time_arr, "temperature": temp_arr, "flow": flow_arr, "gains": gains_arr, "metrics": closed_loop_metrics(time_arr, temp_arr, setpoint)}
     
@@ -126,7 +126,7 @@ def main() -> None:
             time, temp, flow, trace = simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating_point, disturbance_key)
             rejection_results[name] = {"time": time, "temperature": temp, "flow": flow, "disturbance": trace}
         for agent_name, policy in rl_agents.items():
-            rl_d_time, rl_d_temp, rl_d_flow, _, rl_d_trace = simulate_closed_loop_policy(model, policy, setpoint, operating_point, time_final=40.0, dt=float(params.dt), disturbance=disturbance_key, observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0)))
+            rl_d_time, rl_d_temp, rl_d_flow, _, rl_d_trace = simulate_closed_loop_policy(model, policy, setpoint, operating_point, time_final=40.0, dt=float(params.dt), disturbance=disturbance_key, observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0)))
             rejection_results[agent_name] = {"time": rl_d_time, "temperature": rl_d_temp, "flow": rl_d_flow, "disturbance": rl_d_trace}
         plot_closed_loop_disturbance_rejection(rejection_results, label, setpoint, disturbance_plot_map[label])
 

@@ -18,14 +18,10 @@ class CSTRModel:
         self.params = params
 
     def reaction_rate(self, Ca: float, TR: float) -> float:
-        """Arrhenius reaction rate with absolute overflow protection."""
+        """Arrhenius reaction rate with absolute mathematical overflow protection."""
         p = self.params
-        
-        # Prevent division by zero or negative absolute temperatures
-        TR_safe = max(1.0, float(TR)) 
-        
-        # Mathematically clamp the exponent to prevent np.exp() overflows
-        exponent = np.clip(-p.E / (p.R * TR_safe), -500.0, 100.0)
+        TR_safe = max(1.0, float(TR)) # Prevent division by zero or negative temps
+        exponent = np.clip(-p.E / (p.R * TR_safe), -500.0, 100.0) # Shield np.exp
         return p.k0 * np.exp(exponent) * Ca
 
     def dynamics(self, t: float, state: np.ndarray, Fc: float, F: Optional[float] = None, Ca0: Optional[float] = None, T0: Optional[float] = None, Tcin: Optional[float] = None) -> np.ndarray:
@@ -104,7 +100,6 @@ class CSTRModel:
         p = self.params
         _, TR, TJ = float(state[0]), float(state[1]), float(state[2])
         Tcin_value = p.Tcin0 if Tcin is None else float(Tcin)
-        if abs(p.rho_j * p.Cp_j * (Tcin_value - TJ)) < 1e-12: raise ValueError("Cannot compute steady-state coolant flow.")
         return float(- (p.UA * (TR - TJ)) / (p.rho_j * p.Cp_j * (Tcin_value - TJ)))
 
     def linearize(self, state, F, Fc, Ca0=None, T0=None, Tcin=None):
