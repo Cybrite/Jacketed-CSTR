@@ -73,8 +73,7 @@ class CSTRPITuningEnv(gym.Env):
         self._step_count += 1
         truncated = self._step_count >= (self.config.episode_steps // 10)
         
-        # Purgatory Loop: If the agent breaks the reactor, it is trapped receiving constant negative rewards.
-        # This prevents "Lazy reward hacking" by forcing smooth negative gradients.
+        # PURGATORY: Prevents reward-hacking cliffs
         if self._is_in_purgatory:
             return self._get_observation(), -5.0, False, truncated, {}
 
@@ -87,6 +86,7 @@ class CSTRPITuningEnv(gym.Env):
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
             
+            # Bumpless Transfer
             self._integral_action += (Kc / max(tauI, 1e-9)) * error * self.config.dt
             flow_raw = self.model.params.Fc + Kc * error + self._integral_action
             flow = float(np.clip(flow_raw, self.model.params.Fc_min, self.model.params.Fc_max))
@@ -101,7 +101,9 @@ class CSTRPITuningEnv(gym.Env):
                 self._state[1] = self.config.safety_temperature
                 break
 
+            # Absolute Strict L1 Error Penalty (Forces tight setpoint tracking)
             total_reward -= abs(error) / 5.0
+
             self._previous_error = error
             self._state = next_state
 

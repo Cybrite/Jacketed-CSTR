@@ -43,7 +43,7 @@ def select_operating_point(model: CSTRModel) -> np.ndarray:
     return np.array([preferred.Ca, preferred.TR, preferred.TJ], dtype=float)
 
 def main() -> None:
-    # GLOBAL SEEDING: Guarantees 0 variance across multiple runs
+    # GLOBAL SEEDING
     np.random.seed(42)
     random.seed(42)
     torch.manual_seed(42)
@@ -83,10 +83,15 @@ def main() -> None:
 
     print("\nTraining Tabular Q-Learning Agent. Please wait...")
     q_agent, q_history = train_q_learning_agent(rl_env, episodes=1500)
-    print("Training Continuous DDPG Agent. Please wait...")
-    ddpg_agent = train_ddpg_agent(rl_env, total_timesteps=25000)
-    print("Training Soft Actor-Critic (SAC) Agent. Please wait...")
-    sac_agent = train_sac_agent(rl_env, total_timesteps=25000)
+    
+    # Extract the classical IMC baseline to use as the Expert Database for Deep RL
+    imc_gains = tuning_map["IMC-PI"]
+    
+    print("Pre-training & Fine-tuning Continuous DDPG Agent. Please wait...")
+    ddpg_agent = train_ddpg_agent(rl_env, expert_gains=imc_gains, total_timesteps=20000)
+    
+    print("Pre-training & Fine-tuning Soft Actor-Critic (SAC) Agent. Please wait...")
+    sac_agent = train_sac_agent(rl_env, expert_gains=imc_gains, total_timesteps=20000)
 
     class PolicyHoldWrapper:
         def __init__(self, policy_fn, hold_steps=10):
@@ -134,6 +139,7 @@ def main() -> None:
             rejection_results[name] = {"time": time, "temperature": temp, "flow": flow, "disturbance": trace}
             
         for agent_name in rl_agents.keys():
+            # Apply the "Frozen" optimal RL gains to eliminate test-time chattering
             final_kc = float(rl_results[agent_name]["gains"][-1][0])
             final_tauI = float(rl_results[agent_name]["gains"][-1][1])
             optimized_gains = PIGains(Kc=final_kc, tauI=final_tauI)
