@@ -14,9 +14,9 @@ class EnvironmentConfig:
     episode_steps: int = 200
     safety_temperature: float = 500.0
     setpoint_temperature: float = 355.0
-    # Tight bounds focusing strictly on the usable control region
-    Kc_bounds: Tuple[float, float] = (-8.0, -0.5)
-    tauI_bounds: Tuple[float, float] = (0.5, 8.0)
+    # Wide, unrestricted physical bounds allowing full classical PI emulation
+    Kc_bounds: Tuple[float, float] = (-25.0, -0.1)
+    tauI_bounds: Tuple[float, float] = (0.2, 20.0)
 
 class CSTRPITuningEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -79,25 +79,23 @@ class CSTRPITuningEnv(gym.Env):
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
             
-            # Bumpless transfer integration
+            # Bumpless transfer integration calculates true control effort
             self._integral_action += (Kc / max(tauI, 1e-9)) * error * self.config.dt
             flow_raw = self.model.params.Fc + Kc * error + self._integral_action
             flow = float(np.clip(flow_raw, self.model.params.Fc_min, self.model.params.Fc_max))
             
-            # Anti-windup
             if flow_raw > self.model.params.Fc_max or flow_raw < self.model.params.Fc_min:
                 self._integral_action -= (Kc / max(tauI, 1e-9)) * error * self.config.dt
 
             next_state = self._rk4_step(self._state, flow)
             
-            # Tighter safety bounds to catch divergence early
-            if next_state[1] > 500.0 or next_state[1] < 200.0 or not np.all(np.isfinite(next_state)):
+            if next_state[1] > 480.0 or next_state[1] < 200.0 or not np.all(np.isfinite(next_state)):
                 instability = True
                 break
 
-            # STRICT L2 PENALTY: DDPG must target the setpoint to stop the bleeding of points.
-            error_sq = np.clip((error / 5.0)**2, 0.0, 1.0)
-            total_reward -= error_sq
+            # Linear absolute tracking penalty completely eliminates the "Lazy Hack"
+            error_norm = abs(error) / 10.0
+            total_reward -= error_norm
 
             self._previous_error = error
             self._state = next_state
@@ -106,9 +104,9 @@ class CSTRPITuningEnv(gym.Env):
         terminated = bool(instability)
         truncated = self._step_count >= (self.config.episode_steps // hold_steps)
 
-        # Crash penalty scaled specifically for deep networks [-400, 0] bounds
+        # Proportional crash penalty perfectly balanced against the tracking penalty
         if terminated: 
-            total_reward -= 400.0 
+            total_reward -= 250.0 
 
         return self._get_observation(), float(total_reward), terminated, truncated, {}
 

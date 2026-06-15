@@ -20,8 +20,8 @@ class CSTRModel:
     def reaction_rate(self, Ca: float, TR: float) -> float:
         """Arrhenius reaction rate with absolute mathematical overflow protection."""
         p = self.params
-        TR_safe = max(1.0, float(TR)) # Prevent division by zero or negative temps
-        exponent = np.clip(-p.E / (p.R * TR_safe), -500.0, 100.0) # Shield np.exp
+        TR_safe = max(1.0, float(TR)) 
+        exponent = np.clip(-p.E / (p.R * TR_safe), -500.0, 100.0)
         return p.k0 * np.exp(exponent) * Ca
 
     def dynamics(self, t: float, state: np.ndarray, Fc: float, F: Optional[float] = None, Ca0: Optional[float] = None, T0: Optional[float] = None, Tcin: Optional[float] = None) -> np.ndarray:

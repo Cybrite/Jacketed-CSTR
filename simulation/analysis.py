@@ -68,7 +68,7 @@ def simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating
             temp[i:], flow[i:], trace[i:] = model.params.T_safe, model.params.Fc_max, trace[i]; break
     return time, temp, flow, trace
 
-def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0))):
+def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, time_final=80.0, dt=0.1, disturbance=None, disturbance_time=20.0, observation_horizon=20.0, gain_bounds=((-25.0, -0.1), (0.2, 20.0))):
     time = np.arange(0.0, time_final + dt, dt); state = np.asarray(operating_point, dtype=float).copy()
     temp, flow, trace, gains_trace = np.empty_like(time), np.empty_like(time), np.empty_like(time), np.empty((len(time), 2))
     
@@ -87,7 +87,6 @@ def simulate_closed_loop_policy(model, policy_fn, setpoint, operating_point, tim
         gains = np.array([np.clip(gains[0], gain_bounds[0][0], gain_bounds[0][1]), np.clip(gains[1], gain_bounds[1][0], gain_bounds[1][1])])
         gains_trace[i] = gains
         
-        # Bumpless Transfer
         Kc, tauI = gains[0], max(gains[1], 1e-9)
         int_action += (Kc / tauI) * error * dt
         flow_raw = model.params.Fc + Kc * error + int_action

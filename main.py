@@ -5,7 +5,7 @@ from pathlib import Path
 import control
 import numpy as np
 
-from controllers.pi import imc_pi, ziegler_nichols_pi
+from controllers.pi import imc_pi, ziegler_nichols_pi, PIGains
 from models.cstr import CSTRModel
 from models.parameters import default_parameters
 from plots.visualization import (
@@ -104,7 +104,7 @@ def main() -> None:
     
     for agent_name, policy in rl_agents.items():
         time_arr, temp_arr, flow_arr, gains_arr, _ = simulate_closed_loop_policy(
-            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0))
+            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-25.0, -0.1), (0.2, 20.0))
         )
         rl_results[agent_name] = {"time": time_arr, "temperature": temp_arr, "flow": flow_arr, "gains": gains_arr, "metrics": closed_loop_metrics(time_arr, temp_arr, setpoint)}
     
@@ -125,9 +125,18 @@ def main() -> None:
         for name, gains in tuning_map.items():
             time, temp, flow, trace = simulate_closed_loop_disturbance_rejection(model, gains, setpoint, operating_point, disturbance_key)
             rejection_results[name] = {"time": time, "temperature": temp, "flow": flow, "disturbance": trace}
-        for agent_name, policy in rl_agents.items():
-            rl_d_time, rl_d_temp, rl_d_flow, _, rl_d_trace = simulate_closed_loop_policy(model, policy, setpoint, operating_point, time_final=40.0, dt=float(params.dt), disturbance=disturbance_key, observation_horizon=20.0, gain_bounds=((-8.0, -0.5), (0.5, 8.0)))
+            
+        for agent_name in rl_agents.keys():
+            # Apply the "Frozen" RL gains for disturbance rejection to eliminate chattering!
+            final_kc = float(rl_results[agent_name]["gains"][-1][0])
+            final_tauI = float(rl_results[agent_name]["gains"][-1][1])
+            optimized_gains = PIGains(Kc=final_kc, tauI=final_tauI)
+
+            rl_d_time, rl_d_temp, rl_d_flow, rl_d_trace = simulate_closed_loop_disturbance_rejection(
+                model, optimized_gains, setpoint, operating_point, disturbance_key
+            )
             rejection_results[agent_name] = {"time": rl_d_time, "temperature": rl_d_temp, "flow": rl_d_flow, "disturbance": rl_d_trace}
+            
         plot_closed_loop_disturbance_rejection(rejection_results, label, setpoint, disturbance_plot_map[label])
 
     linear_closed_loop_results = {}
