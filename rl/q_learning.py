@@ -1,4 +1,4 @@
-"""Tabular Q-learning implementation with Optimistic Initialization."""
+"""Tabular Q-learning implementation with Optimistic Initializations."""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -22,6 +22,7 @@ class TabularQLearningAgent:
             np.array([-1.2, -0.2, 0.2, 1.2])
         ]
         
+        # Since rewards are purely negative, initializing to 0.0 drives exploration beautifully
         self.q_table = np.zeros(
             (len(self.state_bins[0])+1, len(self.state_bins[1])+1, len(self.state_bins[2])+1, len(kc_actions), len(tau_actions)),
             dtype=float
@@ -45,9 +46,6 @@ class TabularQLearningAgent:
         if explore and np.random.rand() < self.epsilon:
             return np.random.randint(0, len(self.kc_actions)), np.random.randint(0, len(self.tau_actions))
         
-        if not explore and np.all(q_slice == 0.0):
-            return int(len(self.kc_actions) // 2), int(len(self.tau_actions) // 2)
-        
         max_idx = np.unravel_index(np.argmax(q_slice), q_slice.shape)
         return int(max_idx[0]), int(max_idx[1])
 
@@ -60,9 +58,10 @@ class TabularQLearningAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
 def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 1500) -> Tuple[TabularQLearningAgent, QLearningHistory]:
-    np.random.seed(42) # Global Seed
-    kc_actions = np.linspace(-20.0, -0.5, 10)
-    tau_actions = np.linspace(1.0, 20.0, 10)
+    np.random.seed(42) 
+    # Actions are strictly normalized physical deltas [-1, 1]
+    kc_actions = np.linspace(-1.0, 1.0, 8)
+    tau_actions = np.linspace(-1.0, 1.0, 8)
     agent = TabularQLearningAgent(kc_actions, tau_actions)
     episode_rewards = []
 
@@ -75,12 +74,11 @@ def train_q_learning_agent(model_env: CSTRPITuningEnv, episodes: int = 1500) -> 
         while not done:
             kc_idx, tau_idx = agent.select_action_indices(state_idx, explore=True)
             action = np.array([kc_actions[kc_idx], tau_actions[tau_idx]])
-            next_obs, reward, terminated, truncated, _ = model_env.step(action)
             
+            next_obs, reward, terminated, truncated, _ = model_env.step(action)
             next_state_idx = agent.discretize_observation(next_obs)
             done = terminated or truncated
             agent.update(state_idx, (kc_idx, tau_idx), reward, next_state_idx, done)
-            
             state_idx = next_state_idx
             total_reward += reward
 

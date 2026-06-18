@@ -1,10 +1,11 @@
-"""Custom Gymnasium environment for PI gain optimization on the CSTR."""
+"""Custom Gymnasium environment for Residual PI gain optimization."""
 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 import gymnasium as gym
 import numpy as np
+import warnings
 from gymnasium import spaces
 from models.cstr import CSTRModel
 
@@ -14,8 +15,11 @@ class EnvironmentConfig:
     episode_steps: int = 200
     safety_temperature: float = 500.0
     setpoint_temperature: float = 355.0
-    Kc_bounds: Tuple[float, float] = (-20.0, -0.5)
-    tauI_bounds: Tuple[float, float] = (1.0, 20.0)
+    # Residual Control Anchors (updated dynamically from main.py)
+    baseline_Kc: float = -5.0
+    baseline_tauI: float = 2.0
+    delta_Kc: float = 2.5
+    delta_tauI: float = 1.0
 
 class CSTRPITuningEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -28,11 +32,8 @@ class CSTRPITuningEnv(gym.Env):
             safety_temperature=model.params.T_safe, setpoint_temperature=model.params.T0 + 5.0,
         )
         
-        self.action_space = spaces.Box(
-            low=np.array([self.config.Kc_bounds[0], self.config.tauI_bounds[0]], dtype=np.float32),
-            high=np.array([self.config.Kc_bounds[1], self.config.tauI_bounds[1]], dtype=np.float32),
-            dtype=np.float32,
-        )
+        # The AI only thinks in pure mathematical normalized nudges [-1, 1]
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         self.observation_space = spaces.Box(
             low=np.array([-10.0, -10.0, -10.0], dtype=np.float32),
             high=np.array([10.0, 10.0, 10.0], dtype=np.float32),
@@ -42,10 +43,9 @@ class CSTRPITuningEnv(gym.Env):
         self._previous_error = 0.0
         self._integral_action = 0.0
         self._step_count = 0
-        self._is_in_purgatory = False
         self._rng = np.random.default_rng()
         
-        candidates = self.model.find_steady_state_candidates(F=self.model.params.F, Fc=self.model.params.Fc, Tcin=self.model.params.Tcin0)
+        candidates = self.model.find_steady_state_candidates()
         stable = [c for c in candidates if np.max(np.real(c.eigenvalues)) < 0.0] if candidates else []
         if stable:
             preferred = sorted(stable, key=lambda item: (abs(item.TR - 325.0), abs(np.max(np.real(item.eigenvalues)))))[0]
@@ -59,34 +59,28 @@ class CSTRPITuningEnv(gym.Env):
             
         base_state = self._ss_state.copy()
         base_state[1] = self.config.setpoint_temperature - self._rng.uniform(1.0, 6.0)
-        
-        perturbation = np.array([self._rng.normal(0.0, 0.001), self._rng.normal(0.0, 1.0), self._rng.normal(0.0, 0.5)])
-        self._state = base_state + perturbation
+        self._state = base_state + np.array([self._rng.normal(0.0, 0.001), self._rng.normal(0.0, 1.0), self._rng.normal(0.0, 0.5)])
         self._state[0] = max(1e-6, self._state[0])
         self._step_count = 0
         self._previous_error = self.config.setpoint_temperature - self._state[1]
         self._integral_action = 0.0
-        self._is_in_purgatory = False
         return self._get_observation(), {}
 
     def step(self, action):
         self._step_count += 1
         truncated = self._step_count >= (self.config.episode_steps // 10)
-        
-        # PURGATORY: Prevents reward-hacking cliffs
-        if self._is_in_purgatory:
-            return self._get_observation(), -5.0, False, truncated, {}
 
-        gains = np.clip(np.asarray(action, dtype=float), self.action_space.low, self.action_space.high)
-        Kc, tauI = float(gains[0]), float(gains[1])
+        # THE FIX: Residual Mapping. Action=0 equals perfect IMC. Action=1 is +delta.
+        act = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
+        Kc = self.config.baseline_Kc + act[0] * self.config.delta_Kc
+        tauI = max(0.1, self.config.baseline_tauI + act[1] * self.config.delta_tauI)
         
         total_reward = 0.0
+        instability = False
         hold_steps = 10  
         
         for _ in range(hold_steps):
             error = self.config.setpoint_temperature - self._state[1]
-            
-            # Bumpless Transfer
             self._integral_action += (Kc / max(tauI, 1e-9)) * error * self.config.dt
             flow_raw = self.model.params.Fc + Kc * error + self._integral_action
             flow = float(np.clip(flow_raw, self.model.params.Fc_min, self.model.params.Fc_max))
@@ -97,41 +91,36 @@ class CSTRPITuningEnv(gym.Env):
             next_state = self._rk4_step(self._state, flow)
             
             if next_state[1] > 480.0 or next_state[1] < 200.0 or not np.all(np.isfinite(next_state)):
-                self._is_in_purgatory = True
-                self._state[1] = self.config.safety_temperature
+                instability = True
                 break
 
-            # Absolute Strict L1 Error Penalty (Forces tight setpoint tracking)
-            total_reward -= abs(error) / 5.0
-
+            # Pure IAE tracking reward. Simple and powerful.
+            total_reward -= abs(error) * self.config.dt
             self._previous_error = error
             self._state = next_state
 
-        if self._is_in_purgatory:
-            total_reward -= 100.0  
+        terminated = bool(instability)
+        if terminated: total_reward -= 100.0 
 
-        return self._get_observation(), float(total_reward), False, truncated, {}
+        return self._get_observation(), float(total_reward), terminated, truncated, {}
 
     def _get_observation(self) -> np.ndarray:
         error = self.config.setpoint_temperature - self._state[1]
         derivative_error = (error - self._previous_error) / self.config.dt
-        obs = np.array([error / 10.0, self._integral_action / 50.0, derivative_error / 50.0], dtype=np.float32)
-        return np.clip(obs, -10.0, 10.0)
+        return np.clip(np.array([error / 10.0, self._integral_action / 50.0, derivative_error / 50.0], dtype=np.float32), -10.0, 10.0)
 
     def _rk4_step(self, state: np.ndarray, flow: float) -> np.ndarray:
         dt = self.config.dt
-        def rhs(x):
-            xs = np.clip(np.nan_to_num(x), -1e5, 1e5)
-            dx = self.model.dynamics(0.0, xs, Fc=flow, F=self.model.params.F, Ca0=self.model.params.Ca0, T0=self.model.params.T0, Tcin=self.model.params.Tcin0)
-            return np.clip(np.nan_to_num(dx), -1e5, 1e5)
-
-        k1 = rhs(state)
-        k2 = rhs(state + 0.5 * dt * k1)
-        k3 = rhs(state + 0.5 * dt * k2)
-        k4 = rhs(state + dt * k3)
-        next_state = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-        next_state = np.nan_to_num(next_state, nan=self.config.safety_temperature)
-        next_state[0] = np.clip(next_state[0], 0.0, 10.0)
-        next_state[1] = np.clip(next_state[1], 150.0, 600.0)
-        next_state[2] = np.clip(next_state[2], 150.0, 600.0)
-        return next_state
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            def rhs(x):
+                xs = np.copy(x)
+                xs[1] = np.clip(xs[1], 150.0, 600.0)
+                dx = self.model.dynamics(0.0, xs, Fc=flow, F=self.model.params.F, Ca0=self.model.params.Ca0, T0=self.model.params.T0, Tcin=self.model.params.Tcin0)
+                return np.nan_to_num(dx)
+            k1 = rhs(state)
+            k2 = rhs(state + 0.5 * dt * k1)
+            k3 = rhs(state + 0.5 * dt * k2)
+            k4 = rhs(state + dt * k3)
+            next_state = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            return np.nan_to_num(next_state, nan=self.config.safety_temperature)

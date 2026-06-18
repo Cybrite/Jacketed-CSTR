@@ -43,7 +43,6 @@ def select_operating_point(model: CSTRModel) -> np.ndarray:
     return np.array([preferred.Ca, preferred.TR, preferred.TJ], dtype=float)
 
 def main() -> None:
-    # GLOBAL SEEDING
     np.random.seed(42)
     random.seed(42)
     torch.manual_seed(42)
@@ -77,21 +76,23 @@ def main() -> None:
     classical_results = classical_closed_loop_analysis(model, operating_point, tuning_map, setpoint)
     plot_open_vs_closed_loop(t_ol, TR_ol, classical_results["IMC-PI"]["time"], classical_results["IMC-PI"]["temperature"], setpoint, FIGURES / "open_vs_closed_loop.png")
 
-    # --- REINFORCEMENT LEARNING INTEGRATION ---
-    rl_config = EnvironmentConfig(dt=float(params.dt), episode_steps=int(params.episode_steps), safety_temperature=float(params.T_safe), setpoint_temperature=setpoint)
+    imc_gains = tuning_map["IMC-PI"]
+
+    # THE FIX: Residual RL anchoring. We allow the RL agent to vary the IMC parameters by +/- 60%
+    rl_config = EnvironmentConfig(
+        dt=float(params.dt), episode_steps=int(params.episode_steps), 
+        safety_temperature=float(params.T_safe), setpoint_temperature=setpoint,
+        baseline_Kc=imc_gains.Kc, baseline_tauI=imc_gains.tauI,
+        delta_Kc=abs(imc_gains.Kc) * 0.60, delta_tauI=abs(imc_gains.tauI) * 0.60
+    )
     rl_env = CSTRPITuningEnv(model, rl_config)
 
     print("\nTraining Tabular Q-Learning Agent. Please wait...")
     q_agent, q_history = train_q_learning_agent(rl_env, episodes=1500)
-    
-    # Extract the classical IMC baseline to use as the Expert Database for Deep RL
-    imc_gains = tuning_map["IMC-PI"]
-    
-    print("Pre-training & Fine-tuning Continuous DDPG Agent. Please wait...")
-    ddpg_agent = train_ddpg_agent(rl_env, expert_gains=imc_gains, total_timesteps=20000)
-    
-    print("Pre-training & Fine-tuning Soft Actor-Critic (SAC) Agent. Please wait...")
-    sac_agent = train_sac_agent(rl_env, expert_gains=imc_gains, total_timesteps=20000)
+    print("Training Continuous DDPG Agent. Please wait...")
+    ddpg_agent = train_ddpg_agent(rl_env, total_timesteps=25000)
+    print("Training Soft Actor-Critic (SAC) Agent. Please wait...")
+    sac_agent = train_sac_agent(rl_env, total_timesteps=25000)
 
     class PolicyHoldWrapper:
         def __init__(self, policy_fn, hold_steps=10):
@@ -107,8 +108,11 @@ def main() -> None:
         kc_idx, tau_idx = q_agent.select_action_indices(state_idx, explore=False)
         return np.array([q_agent.kc_actions[kc_idx], q_agent.tau_actions[tau_idx]])
     
-    def ddpg_fn(obs): return ddpg_agent.predict(obs, deterministic=True)[0]
-    def sac_fn(obs): return sac_agent.predict(obs, deterministic=True)[0]
+    def ddpg_fn(obs): 
+        return ddpg_agent.predict(obs, deterministic=True)[0]
+        
+    def sac_fn(obs): 
+        return sac_agent.predict(obs, deterministic=True)[0]
 
     rl_agents = {"Q-Learning": PolicyHoldWrapper(q_fn), "DDPG": PolicyHoldWrapper(ddpg_fn), "SAC": PolicyHoldWrapper(sac_fn)}
     rl_results = {}
@@ -116,7 +120,9 @@ def main() -> None:
     
     for agent_name, policy in rl_agents.items():
         time_arr, temp_arr, flow_arr, gains_arr, _ = simulate_closed_loop_policy(
-            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, gain_bounds=((-20.0, -0.5), (1.0, 20.0))
+            model, policy, setpoint, operating_point, time_final=80.0, dt=float(params.dt), observation_horizon=20.0, 
+            baseline_Kc=imc_gains.Kc, baseline_tauI=imc_gains.tauI, 
+            delta_Kc=abs(imc_gains.Kc) * 0.60, delta_tauI=abs(imc_gains.tauI) * 0.60
         )
         rl_results[agent_name] = {"time": time_arr, "temperature": temp_arr, "flow": flow_arr, "gains": gains_arr, "metrics": closed_loop_metrics(time_arr, temp_arr, setpoint)}
     
@@ -139,7 +145,7 @@ def main() -> None:
             rejection_results[name] = {"time": time, "temperature": temp, "flow": flow, "disturbance": trace}
             
         for agent_name in rl_agents.keys():
-            # Apply the "Frozen" optimal RL gains to eliminate test-time chattering
+            # Freezes RL gains for smooth Disturbance Graphs
             final_kc = float(rl_results[agent_name]["gains"][-1][0])
             final_tauI = float(rl_results[agent_name]["gains"][-1][1])
             optimized_gains = PIGains(Kc=final_kc, tauI=final_tauI)
